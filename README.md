@@ -1,2 +1,304 @@
 # TJAXY
-TJAXY is a Delphi-first parser model for TOML, JSON, Avro, XML, YAML
+
+TJAXY is a Delphi-first parser model for TOML, JSON, Avro, XML, YAML, and
+other document/data formats. Format codecs share the same core DOM:
+
+- `TTJAXYDocument`
+- `TTJAXYParser`
+- `TTJAXYValue`
+- `TTJAXYObject`
+- `TTJAXYArray`
+
+That lets an application keep parser handling generic while still choosing a
+specific codec at the boundary.
+
+```pascal
+var
+  Parser: TTJAXYParser;
+begin
+  Parser := TJSON.CreateFromFile('config.json');
+  try
+    Writeln(Parser.Root.AsObject['name'].AsString);
+  finally
+    Parser.Free;
+  end;
+end;
+```
+
+## Units
+
+- `TJAXY.Core`: shared DOM, writer, templates, RTTI/object mapping
+- `TJAXY.TOML`: TOML config codec
+- `TJAXY.JSON`: JSON and JSON5 codec
+- `TJAXY.Avro`: Avro schema + JSON encoding codec
+- `TJAXY.YAML`: KYAML/YAML codec
+- `TJAXY.XML`: XML codec
+
+All codecs expose `CreateFromString` / `CreateFromFile` / `CreateFromStream`
+class factories plus shorter `FromString` / `FromFile` / `FromStream` aliases
+where the format can be loaded without extra state. Avro factories take an
+explicit schema string.
+
+## Feature Matrix
+
+| Format | Unit | V1 support | Not yet covered |
+| --- | --- | --- | --- |
+| TOML | `TJAXY.TOML` | root keys, dotted keys, tables, arrays, arrays of tables, inline tables, basic/literal/multiline strings, decimal/hex/octal/binary integers, floats/special floats, booleans, shared date/time values, comments | full TOML 1.1 compliance edge-case coverage |
+| JSON | `TJAXY.JSON` | JSON DOM read/write, JSON5 mode, comments/trailing commas/unquoted keys in JSON5 | streaming SAX-style parser |
+| Avro | `TJAXY.Avro` | explicit schema parsing through `TJAXY.JSON`, Avro JSON encoding, binary encoding, single-object encoding, null/deflate object containers with multi-block read, parsing canonical form, CRC-64-AVRO fingerprints, logical date/time/uuid/decimal values, records, enums, arrays, maps, unions, named references, aliases metadata, basic reader/writer schema resolution, primitives, defaults | snappy/zstandard container codecs, full arbitrary-precision decimal, full reader/writer schema resolution matrix |
+| XML | `TJAXY.XML` | elements, attributes via `@`, text via `#text`, repeated elements as arrays, namespace preserve/strip modes, CDATA/entity decoding, internal DOCTYPE declaration skipping, self-contained reader/writer | processing instructions round-trip, DTD validation/entity expansion |
+| YAML | `TJAXY.YAML` | KYAML flow mode, YAML block mode, anchors/aliases/merge keys, multi-document read/write | full YAML 1.2 compliance suite parity |
+
+## Common Parser Use
+
+Applications can accept a `TTJAXYParser` and keep format-specific code at the
+edge:
+
+```pascal
+procedure PrintName(Parser: TTJAXYParser);
+begin
+  Writeln(Parser.AsObject.FindValue('name', 'unnamed'));
+end;
+
+var
+  Parser: TTJAXYParser;
+begin
+  Parser := TTOML.CreateFromFile('settings.toml');
+  try
+    PrintName(Parser);
+  finally
+    Parser.Free;
+  end;
+end;
+```
+
+Use the typed codec variable when you need codec-specific options such as
+`TJSON.Extension`, `TXML.NamespaceMode`, `TYAML.Encoding`, or
+`TAvro.ContainerCodec`.
+
+## DOM
+
+```pascal
+var
+  Doc: TJSON;
+  Items: TTJAXYArray;
+begin
+  Doc := TJSON.CreateObjectRoot;
+  try
+    Doc.AsObject.Add('name', 'TJAXY');
+    Items := Doc.AsObject.AddArray('formats');
+    Items.Add('json');
+    Items.Add('yaml');
+    Items.Add('xml');
+    Writeln(Doc.WriteToString(tjaxywmReadable));
+  finally
+    Doc.Free;
+  end;
+end;
+```
+
+Core objects also provide generic lookup helpers for application code:
+
+```pascal
+Name := Doc.AsObject.GetValue('name', 'unnamed');      // current object only
+Title := Doc.AsObject.FindValue('book.title', '');     // dotted path lookup
+Format := Doc.AsObject.FindValue('formats[0]', '');    // array index lookup
+First := Doc.AsObject.FindValue('formats[]', '');      // first array match
+AnyID := Doc.AsObject.FindValue('id', '');             // recursive lookup
+```
+
+`GetValue` checks only the current object level. Direct keys win, then an
+attribute bucket named `@` is used as a fallback, and an empty key returns
+`#text` when present. `FindNode` returns the matching node. `FindValue` uses the
+same value rules but can recurse by name or follow a dotted path with array
+selectors such as `[0]`, `[]`, and `[*]`.
+
+## Templates
+
+Templates live in `TJAXY.Core`, so every codec can use the same template
+registry and generated document tree.
+
+```pascal
+TTJAXY.CreateTemplate('pod')
+  .Add('template', tjaxyttName)
+  .Add('kind', tjaxytString)
+  .Add('enabled', tjaxytBoolean);
+
+Doc := TTJAXY.Template('pod').Fill(['Pod', True]);
+```
+
+## RTTI
+
+Object and record mapping also belongs to the core DOM.
+
+```pascal
+JSON := TJSON.CreateFromObject(Config);
+JSON.AssignToObject(TargetConfig);
+
+JSON := TJSON.CreateFromRecord<TConfigRecord>(ConfigRecord);
+JSON.AssignToRecord<TConfigRecord>(TargetRecord);
+```
+
+Serializer enum rules are shared:
+
+```pascal
+Rules := TTJAXYDocument.DefaultSerializerRules;
+Rules.EnumMode := tjaxjemName;
+Rules.EnumNameCase := tjaxyncLower;
+Rules.EnumStripPrefixes := ['ts'];
+TTJAXYDocument.SerializerRules := Rules;
+```
+
+## XML Mapping
+
+XML maps into the shared object model with these reserved keys:
+
+- `@`: attributes object
+- `#text`: text content when an element also has attributes or child elements
+- repeated child elements: array under the element name
+- document root: top-level object key named after the root element
+
+Namespace prefixes are preserved by default. Use `xnmStripPrefixes` when reading
+to map prefixed names to local names and omit `xmlns` declarations:
+
+```pascal
+XML := TXML.CreateFromString('<h:root xmlns:h="urn:test"><h:item>value</h:item></h:root>', xnmStripPrefixes);
+```
+
+Example:
+
+```xml
+<catalog version="1">
+  <item id="a">First</item>
+  <item id="b"><name>Second</name></item>
+</catalog>
+```
+
+Maps to:
+
+```json
+{
+  "catalog": {
+    "@": { "version": "1" },
+    "item": [
+      { "@": { "id": "a" }, "#text": "First" },
+      { "@": { "id": "b" }, "name": "Second" }
+    ]
+  }
+}
+```
+
+So application code can avoid hard-coding the reserved XML keys for common
+reads:
+
+```pascal
+Catalog := XML.AsObject['catalog'].AsObject;
+Version := Catalog.GetValue('version', '1');     // attribute fallback
+FirstID := Catalog.FindValue('item[0].id', '');  // first item attribute
+FirstText := Catalog.FindValue('item[0]', '');   // element text fallback
+```
+
+## Avro
+
+Avro V1 support is schema-explicit and supports Avro JSON encoding, binary
+encoding, single-object encoding, null/deflate object container files,
+multi-block container reads, parsing canonical form, CRC-64-AVRO fingerprints,
+named references, aliases metadata, basic reader/writer schema resolution, and
+date/time/uuid/decimal logical values. Snappy/zstandard codecs, arbitrary-
+precision decimal, and the full reader/writer schema resolution matrix are
+planned as later layers.
+
+```pascal
+const
+  Schema =
+    '{"type":"record","name":"Message","fields":[' +
+    '{"name":"id","type":"long"},' +
+    '{"name":"title","type":"string"},' +
+    '{"name":"note","type":["null","string"],"default":null}' +
+    ']}';
+
+  Value =
+    '{"id":7,"title":"hello","note":{"string":"optional"}}';
+
+var
+  Avro: TAvro;
+begin
+  Avro := TAvro.CreateFromString(Value, Schema);
+  try
+    Writeln(Avro.Root.AsObject['title'].AsString);
+    Writeln(Avro.WriteToString(tjaxywmCondensed));
+  finally
+    Avro.Free;
+  end;
+end;
+```
+
+Avro unions use the Avro JSON wrapper on input/output, but the TJAXY DOM remains
+plain. For the example above, `note` is available as a normal string in
+`Root.AsObject['note']`.
+
+Schemas are parsed through `TJAXY.JSON`; use `TAvro.CreateFromSchemaJSON` when
+the application already has a parsed `TJSON` schema document. Named schema
+references are resolved for records, enums, and fixed definitions that have
+already appeared in the schema.
+
+Use `WriteToBinaryBytes` / `LoadFromBinaryBytes` for raw Avro binary payloads,
+`WriteSingleObjectBytes` / `LoadSingleObjectBytes` for single-object encoding,
+and `SaveContainerToStream` / `LoadContainerFromStream` for object container
+files. Set `ContainerCodec := 'deflate'` for deflated containers; the default is
+`'null'`.
+
+## TOML
+
+TOML support covers practical configuration documents: root keys, dotted keys,
+tables, arrays, arrays of tables, inline tables, strings, numbers, special
+floats, booleans, shared `TTJAXYDateTime` date/time values, and comments.
+
+```pascal
+TOML := TTOML.CreateFromString(
+  'name = "TJAXY"' + sLineBreak +
+  'enabled = true' + sLineBreak +
+  '[database]' + sLineBreak +
+  'server = "db.local"');
+try
+  Writeln(TOML.Root.AsObject['database'].AsObject['server'].AsString);
+finally
+  TOML.Free;
+end;
+```
+
+## Building Tests
+
+```bash
+./run-tests-wsl.sh
+
+# or build/run individual programs:
+./build-wsl-generic.sh Source/TJAXY.dpk Win64
+./build-wsl-generic.sh Tests/TJSON.TestRunner.dpr Win64
+./build-wsl-generic.sh Tests/YAMLNativeTests.dpr Win64
+./build-wsl-generic.sh Tests/TJAXY.XML.Smoke.dpr Win64
+./build-wsl-generic.sh Tests/TJAXY.XML.Conformance.dpr Win64
+./build-wsl-generic.sh Tests/TJAXY.Avro.Smoke.dpr Win64
+./build-wsl-generic.sh Tests/TJAXY.TOML.Smoke.dpr Win64
+```
+
+The XML conformance runner is built by `run-tests-wsl.sh`, but the W3C XML
+Conformance Test Suite is not bundled in this repository. Download it from:
+
+```text
+https://www.w3.org/XML/Test/xmlts20130923.zip
+```
+
+Extract the archive so the manifest is available at `Tests/xmlconf/xmlconf.xml`.
+When that directory exists, `run-tests-wsl.sh` runs the supported
+non-validating standalone well-formedness slice, including declaration-only
+internal DOCTYPE valid cases. DTD validation/entity expansion, external entity,
+not-standalone, non-UTF-8 and non-BMP/name-range cases are reported as skipped:
+
+```bash
+./Bin/Win64/TJAXY.XML.Conformance.exe Tests/xmlconf --quiet
+```
+
+## License
+
+TJAXY is licensed under the BSD 2-Clause License. See `LICENSE`.
