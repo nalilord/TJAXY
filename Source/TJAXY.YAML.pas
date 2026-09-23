@@ -568,6 +568,7 @@ type
     FDepth: Integer;
     FNodes: Integer;
     FMaxDepth: Integer;
+    FMaxNodes: Integer;
     function Current: Char;
     function Peek(AOffset: Integer = 1): Char;
     function Eof: Boolean;
@@ -588,7 +589,8 @@ type
     procedure SkipWhite;
     procedure ParseDocumentMarker;
   public
-    constructor Create(AText: String; AStrictKYAML: Boolean = True; AConfigurationProfile: Boolean = False; AMaxDepth: Integer = 32);
+    constructor Create(AText: String; AStrictKYAML: Boolean = True; AConfigurationProfile: Boolean = False; AMaxDepth: Integer = 32;
+      AMaxNodes: Integer = 10000);
     property ParsedNodes: Integer read FNodes;
     function Parse: TYAMLValue;
     function ParseValue: TYAMLValue;
@@ -605,7 +607,7 @@ type
     FConfigurationProfile: Boolean;
     FDepth: Integer;
     FNodes: Integer;
-    FEntries: Integer;
+    procedure CountNode(ALine, AColumn: Integer);
     function AliasValue(const AName: String; ALineNo, AColumn: Integer): TYAMLValue;
     function CurrentLine: String;
     function CurrentLineNo: Integer;
@@ -2155,7 +2157,7 @@ end;
 
 { TYAMLParser }
 
-constructor TYAMLParser.Create(AText: String; AStrictKYAML: Boolean; AConfigurationProfile: Boolean; AMaxDepth: Integer);
+constructor TYAMLParser.Create(AText: String; AStrictKYAML: Boolean; AConfigurationProfile: Boolean; AMaxDepth, AMaxNodes: Integer);
 begin
   inherited Create;
   FText:=AText;
@@ -2165,6 +2167,7 @@ begin
   FStrictKYAML:=AStrictKYAML;
   FConfigurationProfile:=AConfigurationProfile;
   FMaxDepth:=AMaxDepth;
+  FMaxNodes:=AMaxNodes;
 end;
 
 procedure TYAMLParser.Advance;
@@ -2270,6 +2273,11 @@ begin
       SkipWhite;
       if (NOT FStrictKYAML) AND (CharToYAML(Current) = ycColon) then
       begin
+        if FConfigurationProfile then
+        begin
+          Value.Free;
+          Error('Configuration does not allow implicit flow mapping entries');
+        end;
         Key:=ValueToKey(Value);
         Value.Free;
         Advance;
@@ -2418,7 +2426,7 @@ begin
     Inc(FNodes);
     if FDepth > FMaxDepth then
       Error('Configuration exceeds 32 nesting levels');
-    if FNodes > 10000 then
+    if FNodes > FMaxNodes then
       Error('Configuration exceeds 10000 nodes');
   end;
 
@@ -2910,6 +2918,15 @@ begin
 end;
 
 { TYAMLBlockParser }
+
+procedure TYAMLBlockParser.CountNode(ALine, AColumn: Integer);
+begin
+  if NOT FConfigurationProfile then
+    Exit;
+  Inc(FNodes);
+  if FNodes > 10000 then
+    Error('Configuration exceeds 10000 nodes', ALine, AColumn);
+end;
 
 function TYAMLBlockParser.AliasValue(const AName: String; ALineNo, AColumn: Integer): TYAMLValue;
 var
@@ -3585,12 +3602,6 @@ begin
         Break;
       if CurrentIndent > AIndent then
         Error(RCS_INVALID_YAML, CurrentLineNo, CurrentIndent + 1);
-      if FConfigurationProfile then
-      begin
-        Inc(FEntries);
-        if FEntries > 10000 then
-          Error('Configuration exceeds 10000 nodes', CurrentLineNo, CurrentIndent + 1);
-      end;
 
       Line:=RemoveComment(CurrentLine);
       LineNo:=CurrentLineNo;
@@ -3612,7 +3623,10 @@ begin
         Inc(FIndex);
         SkipIgnorable;
         if Eof OR (CurrentIndent <= AIndent) then
+        begin
+          CountNode(LineNo, DashColumn + 1);
           Value:=TYAMLNull.Create
+        end
         else
           Value:=ParseNode(CurrentIndent);
         StoreAnchor(NodeAnchor, Value);
@@ -3622,8 +3636,10 @@ begin
 
       if Rest = ':' then
       begin
+        CountNode(LineNo, DashColumn + 1);
         Obj:=TYAMLObject.Create;
         try
+          CountNode(LineNo, DashColumn + 2);
           Obj.Add('', TYAMLNull.Create);
           Inc(FIndex);
           StoreAnchor(NodeAnchor, Obj);
@@ -3635,6 +3651,8 @@ begin
       end
       else if (Length(Rest) >= 2) AND (CharToYAML(Rest[1]) = ycQuestion) and IsYAMLChar(Rest[2], [ycSpace, ycTab]) then
       begin
+        if FConfigurationProfile then
+          Error('Configuration does not allow complex keys', LineNo, DashColumn + 1);
         KeyValue:=ParseInlinePairOrValue(Trim(Copy(Rest, 3, MaxInt)), LineNo, DashColumn + 2);
         try
           Inc(FIndex);
@@ -3682,6 +3700,7 @@ begin
       if (Colon > 0) AND NOT CharInSet(Rest[1], ['{', '[', '"', '''']) then
       begin
         Inc(FIndex);
+        CountNode(LineNo, DashColumn + 1);
         Obj:=TYAMLObject.Create;
         try
           Key:=Trim(Copy(Rest, 1, Colon - 1));
@@ -3699,7 +3718,10 @@ begin
             if Value = nil then
             begin
               if Eof OR (CurrentIndent <= AIndent) then
+              begin
+                CountNode(LineNo, DashColumn + Colon + 1);
                 Value:=TYAMLNull.Create
+              end
               else
                 Value:=ParseNode(CurrentIndent);
             end;
@@ -3713,6 +3735,11 @@ begin
           StoreAnchor(ValueAnchor, Value);
           if Key = '<<' then
           begin
+            if FConfigurationProfile then
+            begin
+              Value.Free;
+              Error('Configuration does not allow merge keys', LineNo, DashColumn + 1);
+            end;
             ApplyMerge(Obj, Value);
             Value.Free;
           end
@@ -3731,6 +3758,7 @@ begin
       begin
         if (Length(Rest) >= 2) AND (CharToYAML(Rest[1]) = ycDash) and IsYAMLChar(Rest[2], [ycSpace, ycTab]) then
         begin
+          CountNode(LineNo, DashColumn + 1);
           Arr:=TYAMLArray.Create;
           try
             Arr.Add(ParseInlineValue(Trim(Copy(Rest, 3, MaxInt)), LineNo, DashColumn + 2));
@@ -3751,6 +3779,7 @@ begin
         end
         else if IsBlockScalarHeader(Rest) then
         begin
+          CountNode(LineNo, DashColumn + 1);
           Value:=ParseBlockScalar(Rest, AIndent, LineNo);
           StoreAnchor(NodeAnchor, Value);
           Result.Add(Value);
@@ -3923,7 +3952,10 @@ begin
     if AliasName <> '' then
       Result:=AliasValue(AliasName, ALineNo, AColumn)
     else
+    begin
+      CountNode(ALineNo, AColumn);
       Result:=TYAMLNull.Create;
+    end;
     StoreAnchor(Anchor, Result);
     Exit;
   end;
@@ -3934,15 +3966,19 @@ begin
     Exit;
   end;
   if IsBlockScalarHeader(V) then
+  begin
+    CountNode(ALineNo, AColumn);
     Exit(ParseBlockScalar(V, CurrentIndent, ALineNo));
+  end;
   if (Pos(',', V) > 0) AND (FlowBalance(V) = 0) AND (NOT CharInSet(V[1], ['[', '{', '"', ''''])) then
   begin
+    CountNode(ALineNo, AColumn);
     Result:=TYAMLString.CreateFrom(V);
     StoreAnchor(Anchor, Result);
     Exit;
   end;
 
-  Parser:=TYAMLParser.Create(V, False, FConfigurationProfile, 32 - FDepth);
+  Parser:=TYAMLParser.Create(V, False, FConfigurationProfile, 32 - FDepth, 10000 - FNodes);
   try
     try
       Result:=Parser.Parse;
@@ -4020,19 +4056,22 @@ begin
   if FConfigurationProfile then
   begin
     Inc(FDepth);
-    Inc(FNodes);
     if FDepth > 32 then
       Error('Configuration exceeds 32 nesting levels', CurrentLineNo, CurrentIndent + 1);
-    if FNodes > 10000 then
-      Error('Configuration exceeds 10000 nodes', CurrentLineNo, CurrentIndent + 1);
   end;
   try
   SkipIgnorable;
   if Eof then
+  begin
+    CountNode(CurrentLineNo, CurrentIndent + 1);
     Exit(TYAMLNull.Create);
+  end;
 
   if CurrentIndent < AIndent then
+  begin
+    CountNode(CurrentLineNo, CurrentIndent + 1);
     Exit(TYAMLNull.Create);
+  end;
   if CurrentIndent > AIndent then
     Error(RCS_INVALID_YAML, CurrentLineNo, CurrentIndent + 1);
 
@@ -4062,14 +4101,24 @@ begin
 
   if IsBlockScalarHeader(Line) then
   begin
+    CountNode(LineNo, AIndent + 1);
     Result:=ParseBlockScalar(Line, AIndent, CurrentLineNo);
   end
   else if (Line <> '') AND CharInSet(Line[1], ['?', ':']) then
+  begin
+    CountNode(LineNo, AIndent + 1);
     Result:=ParseObject(AIndent)
+  end
   else if IsSequenceLine(AIndent) then
+  begin
+    CountNode(LineNo, AIndent + 1);
     Result:=ParseArray(AIndent)
+  end
   else if FindValueColon(Line) > 0 then
+  begin
+    CountNode(LineNo, AIndent + 1);
     Result:=ParseObject(AIndent)
+  end
   else
   begin
     Inc(FIndex);
@@ -4121,12 +4170,6 @@ begin
       Break;
     if CurrentIndent > AIndent then
       Error(RCS_INVALID_YAML, CurrentLineNo, CurrentIndent + 1);
-    if FConfigurationProfile then
-    begin
-      Inc(FEntries);
-      if FEntries > 10000 then
-        Error('Configuration exceeds 10000 nodes', CurrentLineNo, CurrentIndent + 1);
-    end;
 
     LineNo:=CurrentLineNo;
     Line:=RemoveComment(CurrentLine);
@@ -4220,12 +4263,16 @@ begin
           begin
             SkipIgnorable;
             if Eof OR ((CurrentIndent <= AIndent) AND NOT IsSequenceLine(AIndent)) then
+            begin
+              CountNode(LineNo, AIndent + 2);
               Value:=TYAMLNull.Create
+            end
             else
               Value:=ParseNode(CurrentIndent);
           end
           else if (Length(ValueText) >= 2) AND (CharToYAML(ValueText[1]) = ycDash) and IsYAMLChar(ValueText[2], [ycSpace, ycTab]) then
           begin
+            CountNode(LineNo, AIndent + 2);
             Arr:=TYAMLArray.Create;
             try
               Arr.Add(ParseInlineValue(Trim(Copy(ValueText, 3, MaxInt)), LineNo, AIndent + 3));
@@ -4240,6 +4287,7 @@ begin
                     Inc(InnerIndent);
                   InnerArr:=TYAMLArray.Create;
                   try
+                    CountNode(CurrentLineNo, InnerIndent + 1);
                     InnerArr.Add(ParseInlineValue(Trim(Copy(Line, 3, MaxInt)), CurrentLineNo, InnerIndent + 2));
                     Inc(FIndex);
                     while (NOT Eof) AND IsSequenceLine(InnerIndent) do
@@ -4267,7 +4315,10 @@ begin
             end;
           end
           else if IsBlockScalarHeader(ValueText) then
+          begin
+            CountNode(LineNo, AIndent + 2);
             Value:=ParseBlockScalar(ValueText, AIndent, LineNo)
+          end
           else
           begin
             if (FlowBalance(ValueText) > 0) then
@@ -4282,7 +4333,10 @@ begin
       end;
 
       if Value = nil then
+      begin
+        CountNode(LineNo, AIndent + 2);
         Value:=TYAMLNull.Create;
+      end;
       if FConfigurationProfile AND AObject.HasKey(Key) then
       begin
         Value.Free;
@@ -4330,7 +4384,10 @@ begin
       if Value = nil then
       begin
         if Eof OR ((CurrentIndent <= AIndent) AND NOT IsSequenceLine(AIndent)) then
+        begin
+          CountNode(LineNo, AIndent + Colon + 1);
           Value:=TYAMLNull.Create
+        end
         else
         begin
           if (Anchor <> '') AND (Trim(RemoveComment(CurrentLine)) <> '') AND (Trim(RemoveComment(CurrentLine))[1] = '&') AND (FindValueColon(Trim(RemoveComment(CurrentLine))) = 0) AND (NOT IsSequenceLine(CurrentIndent)) then
@@ -4340,7 +4397,10 @@ begin
       end;
     end
     else if IsBlockScalarHeader(ValueText) then
+    begin
+      CountNode(LineNo, AIndent + Colon + 1);
       Value:=ParseBlockScalar(ValueText, AIndent, LineNo)
+    end
     else if Value = nil then
     begin
       if (Length(ValueText) >= 2) AND (CharToYAML(ValueText[1]) = ycDash) and IsYAMLChar(ValueText[2], [ycSpace, ycTab]) then
