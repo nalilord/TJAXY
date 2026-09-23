@@ -78,7 +78,9 @@ type
     class function FromStream(AStream: TStream; AEncoding: TYAMLEncoding = yeKYAML): TYAML; static;
     constructor Create; override;
     constructor CreateFromObject(AObject: TObject); override;
+    {$IFNDEF FPC}
     class function CreateFromRecord<T>(const ARecord: T): TYAML; static;
+    {$ENDIF}
     constructor CreateFromString(AValue: String; AEncoding: TYAMLEncoding = yeKYAML);
     class function CreateFromFile(AFile: String; AEncoding: TYAMLEncoding = yeKYAML): TYAML; static;
     constructor CreateFromStream(AStream: TStream; AEncoding: TYAMLEncoding = yeKYAML);
@@ -867,6 +869,7 @@ begin
   end;
 end;
 
+{$IFNDEF FPC}
 class function TYAML.CreateFromRecord<T>(const ARecord: T): TYAML;
 var
   Doc: TTJAXY;
@@ -879,6 +882,7 @@ begin
     Doc.Free;
   end;
 end;
+{$ENDIF}
 
 constructor TYAML.CreateFromStream(AStream: TStream; AEncoding: TYAMLEncoding);
 begin

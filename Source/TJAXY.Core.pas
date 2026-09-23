@@ -520,7 +520,7 @@ begin
         Result[1]:=UpCase(Result[1]);
     tjaxyncCamel:
       if Result <> '' then
-        Result[1]:=LowerCase(Result[1])[1];
+        Result:=LowerCase(Copy(Result, 1, 1)) + Copy(Result, 2, MaxInt);
     tjaxyncSnake: Result:=TJAXYToSnakeCase(Result, False);
     tjaxyncScreamingSnake: Result:=TJAXYToSnakeCase(Result, True);
   end;
