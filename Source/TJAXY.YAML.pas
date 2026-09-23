@@ -20,29 +20,35 @@ uses
 
 type
   TYAMLEncoding = (yeKYAML, yeYAML);
-  TYAMLType = (kytNull, kytInteger, kytFloat, kytString, kytBoolean, kytObject, kytArray);
+  TYAMLConfigurationOptions = record
+    MaxInputBytes: Integer;
+    MaxDepth: Integer;
+    MaxNodes: Integer;
+  end;
+  TYAMLType = TTJAXYType;
   TYAMLStringWriteMode = (ywmReadable, ywmCondensed);
 
   TYAML = class;
-  TYAMLValue = class;
-  TYAMLNull = class;
-  TYAMLString = class;
-  TYAMLInteger = class;
-  TYAMLFloat = class;
-  TYAMLBoolean = class;
-  TYAMLObject = class;
-  TYAMLArray = class;
-
-  TYAMLClass = class of TYAMLValue;
+  TYAMLValue = TTJAXYValue;
+  TYAMLNull = TTJAXYNull;
+  TYAMLString = TTJAXYString;
+  TYAMLInteger = TTJAXYInteger;
+  TYAMLFloat = TTJAXYFloat;
+  TYAMLBoolean = TTJAXYBoolean;
+  TYAMLObject = TTJAXYObject;
+  TYAMLArray = TTJAXYArray;
+  TYAMLClass = TTJAXYValueClass;
 
   EYAMLException = class(Exception)
   private
     FLine: Integer;
     FColumn: Integer;
+    FReason: String;
   public
     constructor Create(AMessage: String; ALine, AColumn: Integer);
     property Line: Integer read FLine;
     property Column: Integer read FColumn;
+    property Reason: String read FReason;
   end;
 
   TYAML = class(TTJAXYParser)
@@ -51,6 +57,7 @@ type
     FDocuments: TList;
     FEncoding: TYAMLEncoding;
     FConfigurationProfile: Boolean;
+    FConfigurationOptions: TYAMLConfigurationOptions;
     FRoot: TYAMLValue;
     FWriteDocumentMarker: Boolean;
     function GetIsObject: Boolean;
@@ -61,11 +68,13 @@ type
     function GetArrayValue(Index: Integer): TYAMLValue;
     function GetDocument(Index: Integer): TYAMLValue;
     function GetDocumentCount: Integer;
-    procedure SyncTJAXYRoot;
+    procedure ReplaceDocuments(ANewDocuments: TList);
+    procedure SetConfigurationOptions(const AValue: TYAMLConfigurationOptions);
   protected
     procedure Parse;
     procedure SetRoot(AValue: TTJAXYValue); override;
   public
+    class function DefaultConfigurationOptions: TYAMLConfigurationOptions; static;
     class function EncodeString(AString: String): String;
     class function IsSafeKey(AKey: String): Boolean;
     class function CreateTemplate(AName: String): TTJAXYTemplate; static;
@@ -77,13 +86,16 @@ type
     class function FromString(AValue: String; AEncoding: TYAMLEncoding = yeKYAML): TYAML; static;
     class function FromFile(AFile: String; AEncoding: TYAMLEncoding = yeKYAML): TYAML; static;
     class function FromStream(AStream: TStream; AEncoding: TYAMLEncoding = yeKYAML): TYAML; static;
-    class function FromConfigurationString(const AValue: String): TYAML; static;
-    class function FromConfigurationFile(const AFile: String): TYAML; static;
+    class function FromConfigurationString(const AValue: String): TYAML; overload; static;
+    class function FromConfigurationString(const AValue: String; const AOptions: TYAMLConfigurationOptions): TYAML; overload; static;
+    class function FromConfigurationFile(const AFile: String): TYAML; overload; static;
+    class function FromConfigurationFile(const AFile: String; const AOptions: TYAMLConfigurationOptions): TYAML; overload; static;
+    class function FromConfigurationStream(AStream: TStream): TYAML; overload; static;
+    class function FromConfigurationStream(AStream: TStream; const AOptions: TYAMLConfigurationOptions): TYAML; overload; static;
     constructor Create; override;
     constructor CreateFromObject(AObject: TObject); override;
-    {$IFNDEF FPC}
     class function CreateFromRecord<T>(const ARecord: T): TYAML; static;
-    {$ENDIF}
+    class function CreateFromRecordWithRules<T>(const ARecord: T; const ARules: TTJAXYSerializerRules): TYAML; static;
     constructor CreateFromString(AValue: String; AEncoding: TYAMLEncoding = yeKYAML);
     class function CreateFromFile(AFile: String; AEncoding: TYAMLEncoding = yeKYAML): TYAML; static;
     constructor CreateFromStream(AStream: TStream; AEncoding: TYAMLEncoding = yeKYAML);
@@ -105,6 +117,7 @@ type
     procedure SaveToFile(const AFileName: String); override;
     procedure SaveToStream(AStream: TStream); override;
     property Encoding: TYAMLEncoding read FEncoding write FEncoding;
+    property ConfigurationOptions: TYAMLConfigurationOptions read FConfigurationOptions write SetConfigurationOptions;
     property WriteDocumentMarker: Boolean read FWriteDocumentMarker write FWriteDocumentMarker;
     property ObjectValue[Key: String]: TYAMLValue read GetObjectValue; default;
     property ArrayValue[Index: Integer]: TYAMLValue read GetArrayValue;
@@ -117,278 +130,19 @@ type
     property AsArray: TYAMLArray read GetAsArray;
   end;
 
-  TYAMLValue = class(TPersistent)
-  private
-    function GetIsArray: Boolean;
-    function GetIsBoolean: Boolean;
-    function GetIsFloat: Boolean;
-    function GetIsInteger: Boolean;
-    function GetIsNull: Boolean;
-    function GetIsObject: Boolean;
-    function GetIsString: Boolean;
-    function GetTyp: TYAMLType;
-  protected
-    function GetClass: TYAMLClass; virtual;
-    function GetAsArray: TYAMLArray; virtual; abstract;
-    function GetAsBoolean: Boolean; virtual; abstract;
-    function GetAsFloat: Extended; virtual; abstract;
-    function GetAsInteger: Int64; virtual; abstract;
-    function GetAsObject: TYAMLObject; virtual; abstract;
-    function GetAsString: String; virtual; abstract;
-  public
-    constructor Create; virtual;
-    function IsEmpty: Boolean; virtual; abstract;
-    function Copy: TYAMLValue; virtual;
-    property Typ: TYAMLType read GetTyp;
-    property IsNull: Boolean read GetIsNull;
-    property IsString: Boolean read GetIsString;
-    property IsInteger: Boolean read GetIsInteger;
-    property IsFloat: Boolean read GetIsFloat;
-    property IsBoolean: Boolean read GetIsBoolean;
-    property IsObject: Boolean read GetIsObject;
-    property IsArray: Boolean read GetIsArray;
-    property AsString: String read GetAsString;
-    property AsInteger: Int64 read GetAsInteger;
-    property AsFloat: Extended read GetAsFloat;
-    property AsBoolean: Boolean read GetAsBoolean;
-    property AsObject: TYAMLObject read GetAsObject;
-    property AsArray: TYAMLArray read GetAsArray;
-  end;
-
-  TYAMLNull = class(TYAMLValue)
-  protected
-    function GetClass: TYAMLClass; override;
-    function GetAsArray: TYAMLArray; override;
-    function GetAsBoolean: Boolean; override;
-    function GetAsFloat: Extended; override;
-    function GetAsInteger: Int64; override;
-    function GetAsObject: TYAMLObject; override;
-    function GetAsString: String; override;
-  public
-    constructor Create; override;
-    function IsEmpty: Boolean; override;
-  end;
-
-  TYAMLString = class(TYAMLValue)
-  private
-    FValue: String;
-  protected
-    function GetClass: TYAMLClass; override;
-    function GetAsArray: TYAMLArray; override;
-    function GetAsBoolean: Boolean; override;
-    function GetAsFloat: Extended; override;
-    function GetAsInteger: Int64; override;
-    function GetAsObject: TYAMLObject; override;
-    function GetAsString: String; override;
-  public
-    constructor Create; override;
-    constructor CreateFrom(AValue: String);
-    function IsEmpty: Boolean; override;
-    property Value: String read FValue write FValue;
-  end;
-
-  TYAMLInteger = class(TYAMLValue)
-  private
-    FValue: Int64;
-  protected
-    function GetClass: TYAMLClass; override;
-    function GetAsArray: TYAMLArray; override;
-    function GetAsBoolean: Boolean; override;
-    function GetAsFloat: Extended; override;
-    function GetAsInteger: Int64; override;
-    function GetAsObject: TYAMLObject; override;
-    function GetAsString: String; override;
-  public
-    constructor Create; override;
-    constructor CreateFrom(AValue: Int64);
-    function IsEmpty: Boolean; override;
-    property Value: Int64 read FValue write FValue;
-  end;
-
-  TYAMLFloat = class(TYAMLValue)
-  private
-    FValue: Extended;
-  protected
-    function GetClass: TYAMLClass; override;
-    function GetAsArray: TYAMLArray; override;
-    function GetAsBoolean: Boolean; override;
-    function GetAsFloat: Extended; override;
-    function GetAsInteger: Int64; override;
-    function GetAsObject: TYAMLObject; override;
-    function GetAsString: String; override;
-  public
-    constructor Create; override;
-    constructor CreateFrom(AValue: Extended);
-    function IsEmpty: Boolean; override;
-    property Value: Extended read FValue write FValue;
-  end;
-
-  TYAMLBoolean = class(TYAMLValue)
-  private
-    FValue: Boolean;
-  protected
-    function GetClass: TYAMLClass; override;
-    function GetAsArray: TYAMLArray; override;
-    function GetAsBoolean: Boolean; override;
-    function GetAsFloat: Extended; override;
-    function GetAsInteger: Int64; override;
-    function GetAsObject: TYAMLObject; override;
-    function GetAsString: String; override;
-  public
-    constructor Create; override;
-    constructor CreateFrom(AValue: Boolean);
-    function IsEmpty: Boolean; override;
-    property Value: Boolean read FValue write FValue;
-  end;
-
-  TYAMLObject = class(TYAMLValue)
-  private
-    FKeys: TStringList;
-    function IndexOf(AKey: String): Integer;
-    function GetValue(Key: String): TYAMLValue;
-    function GetCount: Integer;
-    function GetItem(Index: Integer): TYAMLValue;
-    function GetName(Index: Integer): String;
-  protected
-    function GetClass: TYAMLClass; override;
-    function GetAsArray: TYAMLArray; override;
-    function GetAsBoolean: Boolean; override;
-    function GetAsFloat: Extended; override;
-    function GetAsInteger: Int64; override;
-    function GetAsObject: TYAMLObject; override;
-    function GetAsString: String; override;
-  public
-    constructor Create; override;
-    constructor CreateFrom(AObject: TYAMLObject);
-    destructor Destroy; override;
-    function ToString: String; override;
-    procedure Clear;
-    procedure Delete(AKey: String);
-    function IsEmpty: Boolean; override;
-    function HasKey(AKey: String): Boolean;
-    procedure Add(AKey: String); overload;
-    procedure Add(AKey: String; AValue: String); overload;
-    procedure Add(AKey: String; AValue: Int64); overload;
-    procedure Add(AKey: String; AValue: Extended); overload;
-    procedure Add(AKey: String; AValue: Boolean); overload;
-    procedure Add(AKey: String; AValue: TYAMLValue); overload;
-    procedure SetOrAdd(AKey: String); overload;
-    procedure SetOrAdd(AKey: String; AValue: String); overload;
-    procedure SetOrAdd(AKey: String; AValue: Int64); overload;
-    procedure SetOrAdd(AKey: String; AValue: Extended); overload;
-    procedure SetOrAdd(AKey: String; AValue: Boolean); overload;
-    procedure SetOrAdd(AKey: String; AValue: TYAMLValue); overload;
-    procedure AddObject(AKey: String; AObject: TYAMLObject); overload;
-    procedure AddArray(AKey: String; AArray: TYAMLArray); overload;
-    function AddObject(AKey: String): TYAMLObject; overload;
-    function AddArray(AKey: String): TYAMLArray; overload;
-    function GetOrAdd(AKey: String; ADefault: String): String; overload;
-    function GetOrAdd(AKey: String; ADefault: Int64): Int64; overload;
-    function GetOrAdd(AKey: String; ADefault: Extended): Extended; overload;
-    function GetOrAdd(AKey: String; ADefault: Boolean): Boolean; overload;
-    function GetOrAddObject(AKey: String): TYAMLObject;
-    function GetOrAddArray(AKey: String): TYAMLArray;
-    property Count: Integer read GetCount;
-    property Value[Key: String]: TYAMLValue read GetValue; default;
-    property Item[Index: Integer]: TYAMLValue read GetItem;
-    property Name[Index: Integer]: String read GetName;
-  end;
-
-  TYAMLArray = class(TYAMLValue)
-  private
-    FValues: TList;
-    function GetItem(Index: Integer): TYAMLValue;
-    function GetCount: Integer;
-  protected
-    function GetClass: TYAMLClass; override;
-    function GetAsArray: TYAMLArray; override;
-    function GetAsBoolean: Boolean; override;
-    function GetAsFloat: Extended; override;
-    function GetAsInteger: Int64; override;
-    function GetAsObject: TYAMLObject; override;
-    function GetAsString: String; override;
-    procedure Add(AValue: TYAMLValue); overload;
-  public
-    constructor Create; override;
-    destructor Destroy; override;
-    function ToString: String; override;
-    procedure Clear;
-    procedure Add; overload;
-    procedure Add(AValue: String); overload;
-    procedure Add(AValue: Int64); overload;
-    procedure Add(AValue: Extended); overload;
-    procedure Add(AValue: Boolean); overload;
-    procedure AddObject(AObject: TYAMLObject); overload;
-    procedure AddArray(AArray: TYAMLArray); overload;
-    procedure Delete(AIndex: Integer);
-    procedure Insert(AIndex: Integer; AValue: TYAMLValue);
-    procedure Move(ACurIndex, ANewIndex: Integer);
-    procedure Exchange(AIndex1, AIndex2: Integer);
-    procedure Replace(AIndex: Integer; AValue: TYAMLValue);
-    function IsEmpty: Boolean; override;
-    function AddObject: TYAMLObject; overload;
-    function AddObject(AKey: String; AValue: TYAMLValue): TYAMLObject; overload;
-    function AddArray: TYAMLArray; overload;
-    property Count: Integer read GetCount;
-    property Item[Index: Integer]: TYAMLValue read GetItem; default;
-  end;
+const
+  kytNull = tjaxytNull;
+  kytInteger = tjaxytInteger;
+  kytFloat = tjaxytFloat;
+  kytString = tjaxytString;
+  kytBoolean = tjaxytBoolean;
+  kytObject = tjaxytObject;
+  kytArray = tjaxytArray;
 
 implementation
 
 uses
   Math;
-
-function YAMLValidUTF8(const ABytes: TBytes): Boolean;
-var
-  I, J, Continuations: Integer;
-  First, SecondMinimum, SecondMaximum: Byte;
-begin
-  Result:=False;
-  I:=0;
-  while I < Length(ABytes) do
-  begin
-    First:=ABytes[I];
-    if First = 0 then
-      Exit;
-    if First < $80 then
-    begin
-      Inc(I);
-      Continue;
-    end;
-
-    SecondMinimum:=$80;
-    SecondMaximum:=$BF;
-    if (First >= $C2) AND (First <= $DF) then
-      Continuations:=1
-    else if (First >= $E0) AND (First <= $EF) then
-    begin
-      Continuations:=2;
-      if First = $E0 then
-        SecondMinimum:=$A0;
-      if First = $ED then
-        SecondMaximum:=$9F;
-    end else
-    if (First >= $F0) AND (First <= $F4) then
-    begin
-      Continuations:=3;
-      if First = $F0 then
-        SecondMinimum:=$90;
-      if First = $F4 then
-        SecondMaximum:=$8F;
-    end else
-      Exit;
-
-    if I + Continuations >= Length(ABytes) then
-      Exit;
-    if (ABytes[I + 1] < SecondMinimum) OR (ABytes[I + 1] > SecondMaximum) then
-      Exit;
-    for J:=2 to Continuations do
-      if (ABytes[I + J] < $80) OR (ABytes[I + J] > $BF) then
-        Exit;
-    Inc(I, Continuations + 1);
-  end;
-  Result:=True;
-end;
 
 function YAMLDecimalInteger(const AValue: String): Boolean;
 var
@@ -452,93 +206,6 @@ begin
   end;
 end;
 
-function YAMLValueToTJAXY(AValue: TYAMLValue): TTJAXYValue;
-var
-  I: Integer;
-  Obj: TTJAXYObject;
-  Arr: TTJAXYArray;
-begin
-  if (AValue = nil) OR AValue.IsNull then
-    Result:=TTJAXYNull.Create
-  else if AValue.IsString then
-    Result:=TTJAXYString.CreateFrom(AValue.AsString)
-  else if AValue.IsInteger then
-    Result:=TTJAXYInteger.CreateFrom(AValue.AsInteger)
-  else if AValue.IsFloat then
-    Result:=TTJAXYFloat.CreateFrom(AValue.AsFloat)
-  else if AValue.IsBoolean then
-    Result:=TTJAXYBoolean.CreateFrom(AValue.AsBoolean)
-  else if AValue.IsObject then
-  begin
-    Obj:=TTJAXYObject.Create;
-    try
-      for I:=0 to AValue.AsObject.Count - 1 do
-        Obj.Add(AValue.AsObject.Name[I], YAMLValueToTJAXY(AValue.AsObject.Item[I]));
-      Result:=Obj;
-    except
-      Obj.Free;
-      raise;
-    end;
-  end
-  else if AValue.IsArray then
-  begin
-    Arr:=TTJAXYArray.Create;
-    try
-      for I:=0 to AValue.AsArray.Count - 1 do
-        Arr.Insert(Arr.Count, YAMLValueToTJAXY(AValue.AsArray.Item[I]));
-      Result:=Arr;
-    except
-      Arr.Free;
-      raise;
-    end;
-  end
-  else
-    Result:=TTJAXYNull.Create;
-end;
-
-function TJAXYValueToYAML(AValue: TTJAXYValue): TYAMLValue;
-var
-  I: Integer;
-  Obj: TYAMLObject;
-  Arr: TYAMLArray;
-begin
-  if (AValue = nil) OR AValue.IsNull then
-    Result:=TYAMLNull.Create
-  else if AValue.IsString then
-    Result:=TYAMLString.CreateFrom(AValue.AsString)
-  else if AValue.IsInteger then
-    Result:=TYAMLInteger.CreateFrom(AValue.AsInteger)
-  else if AValue.IsFloat then
-    Result:=TYAMLFloat.CreateFrom(AValue.AsFloat)
-  else if AValue.IsBoolean then
-    Result:=TYAMLBoolean.CreateFrom(AValue.AsBoolean)
-  else if AValue.IsObject then
-  begin
-    Obj:=TYAMLObject.Create;
-    try
-      for I:=0 to AValue.AsObject.Count - 1 do
-        Obj.Add(AValue.AsObject.Name[I], TJAXYValueToYAML(AValue.AsObject.Item[I]));
-      Result:=Obj;
-    except
-      Obj.Free;
-      raise;
-    end;
-  end
-  else if AValue.IsArray then
-  begin
-    Arr:=TYAMLArray.Create;
-    try
-      for I:=0 to AValue.AsArray.Count - 1 do
-        Arr.Insert(Arr.Count, TJAXYValueToYAML(AValue.AsArray.Item[I]));
-      Result:=Arr;
-    except
-      Arr.Free;
-      raise;
-    end;
-  end
-  else
-    Result:=TYAMLNull.Create;
-end;
 
 type
   TYAMLChar = (
@@ -575,6 +242,32 @@ const
   YAML_INDENT_SIZE = 2;
 
 type
+  TYAMLRestrictedFeature = (yrfAnchors, yrfAliases, yrfTags,
+    yrfDirectives, yrfMergeKeys, yrfComplexKeys, yrfImplicitFlowMapping);
+
+function YAMLProfileAllows(AConfigurationProfile: Boolean;
+  AFeature: TYAMLRestrictedFeature): Boolean;
+begin
+  if NOT AConfigurationProfile then
+    Exit(True);
+  case AFeature of
+    yrfAnchors, yrfAliases, yrfTags, yrfDirectives, yrfMergeKeys,
+    yrfComplexKeys, yrfImplicitFlowMapping:
+      Result:=False;
+  else
+    Result:=False;
+  end;
+end;
+
+type
+  TYAMLParseBudget = class
+  public
+    Nodes: Integer;
+    MaxNodes: Integer;
+    constructor Create(AMaxNodes: Integer);
+    function Charge: Boolean;
+  end;
+
   TYAMLParser = class
   private
     FText: String;
@@ -584,9 +277,10 @@ type
     FStrictKYAML: Boolean;
     FConfigurationProfile: Boolean;
     FDepth: Integer;
-    FNodes: Integer;
+    FBudget: TYAMLParseBudget;
+    FOwnsBudget: Boolean;
     FMaxDepth: Integer;
-    FMaxNodes: Integer;
+    procedure CountNode;
     function Current: Char;
     function Peek(AOffset: Integer = 1): Char;
     function Eof: Boolean;
@@ -608,8 +302,8 @@ type
     procedure ParseDocumentMarker;
   public
     constructor Create(AText: String; AStrictKYAML: Boolean = True; AConfigurationProfile: Boolean = False; AMaxDepth: Integer = 32;
-      AMaxNodes: Integer = 10000);
-    property ParsedNodes: Integer read FNodes;
+      AMaxNodes: Integer = 10000; ABudget: TYAMLParseBudget = nil);
+    destructor Destroy; override;
     function Parse: TYAMLValue;
     function ParseValue: TYAMLValue;
     function ParseObject: TYAMLObject;
@@ -624,7 +318,9 @@ type
     FIndex: Integer;
     FConfigurationProfile: Boolean;
     FDepth: Integer;
-    FNodes: Integer;
+    FBudget: TYAMLParseBudget;
+    FMaxDepth: Integer;
+    FLineOffset: Integer;
     procedure CountNode(ALine, AColumn: Integer);
     function AliasValue(const AName: String; ALineNo, AColumn: Integer): TYAMLValue;
     function CurrentLine: String;
@@ -641,6 +337,7 @@ type
     function HasContent(const ALine: String): Boolean;
     function IsSequenceLine(AIndent: Integer): Boolean;
     function ParseInlineValue(const AValue: String; ALineNo, AColumn: Integer): TYAMLValue;
+    function ParseCompactSequenceItem(const AValue: String; ALineNo, AColumn: Integer): TYAMLValue;
     function ParseKey(const AKey: String; ALineNo: Integer): String;
     function IsBlockScalarHeader(const AValue: String): Boolean;
     function ParseBlockScalar(const AHeader: String; AIndent, ALineNo: Integer): TYAMLString;
@@ -655,7 +352,8 @@ type
     procedure SkipIgnorable;
     procedure ParseObjectInto(AObject: TYAMLObject; AIndent: Integer);
   public
-    constructor Create(AText: String; AConfigurationProfile: Boolean = False);
+    constructor Create(AText: String; AConfigurationProfile: Boolean = False; AMaxDepth: Integer = 32; AMaxNodes: Integer = 10000;
+      AFirstLine: Integer = 1);
     destructor Destroy; override;
     function Parse: TYAMLValue;
     function ParseNode(AIndent: Integer): TYAMLValue;
@@ -731,60 +429,44 @@ end;
 
 function YAMLFormatSettings: TFormatSettings;
 begin
-  {$IFDEF FPC}
-  Result:=DefaultFormatSettings;
-  {$ELSE}
-  Result:=TFormatSettings.Create;
-  {$ENDIF}
+  Result:=FormatSettings;
   Result.DecimalSeparator:=YAML_CHARS[ycDot];
   Result.ThousandSeparator:=YAML_CHARS[ycComma];
 end;
 
 function YAMLInvalidArray: TYAMLArray;
 begin
-  {$IFDEF FPC}
   Result:=nil;
-  {$ENDIF}
   raise Exception.Create(RCS_INVALID_VALUE_CAST);
 end;
 
 function YAMLInvalidBoolean: Boolean;
 begin
-  {$IFDEF FPC}
   Result:=False;
-  {$ENDIF}
   raise Exception.Create(RCS_INVALID_VALUE_CAST);
 end;
 
 function YAMLInvalidFloat: Extended;
 begin
-  {$IFDEF FPC}
   Result:=0;
-  {$ENDIF}
   raise Exception.Create(RCS_INVALID_VALUE_CAST);
 end;
 
 function YAMLInvalidInteger: Int64;
 begin
-  {$IFDEF FPC}
   Result:=0;
-  {$ENDIF}
   raise Exception.Create(RCS_INVALID_VALUE_CAST);
 end;
 
 function YAMLInvalidObject: TYAMLObject;
 begin
-  {$IFDEF FPC}
   Result:=nil;
-  {$ENDIF}
   raise Exception.Create(RCS_INVALID_VALUE_CAST);
 end;
 
 function YAMLInvalidString: String;
 begin
-  {$IFDEF FPC}
   Result:='';
-  {$ENDIF}
   raise Exception.Create(RCS_INVALID_VALUE_CAST);
 end;
 
@@ -794,6 +476,7 @@ constructor EYAMLException.Create(AMessage: String; ALine, AColumn: Integer);
 begin
   FLine:=ALine;
   FColumn:=AColumn;
+  FReason:=AMessage;
   inherited Create(Format(RCS_KYAML_PARSER_EXCEPTION, [ALine, AColumn, AMessage]));
 end;
 
@@ -859,12 +542,26 @@ end;
 constructor TYAML.Create;
 begin
   inherited Create;
-  FData:=TStringStream.Create('');
+  FData:=TStringStream.Create('', TEncoding.UTF8, False);
   FDocuments:=TList.Create;
   FEncoding:=yeKYAML;
-  FRoot:=TYAMLNull.Create;
-  FDocuments.Add(FRoot);
-  SyncTJAXYRoot;
+  FConfigurationOptions:=DefaultConfigurationOptions;
+  SetRoot(TYAMLNull.Create);
+end;
+
+class function TYAML.DefaultConfigurationOptions: TYAMLConfigurationOptions;
+begin
+  Result.MaxInputBytes:=256 * 1024;
+  Result.MaxDepth:=32;
+  Result.MaxNodes:=10000;
+end;
+
+procedure TYAML.SetConfigurationOptions(const AValue: TYAMLConfigurationOptions);
+begin
+  if (AValue.MaxInputBytes <= 0) OR (AValue.MaxInputBytes = MaxInt) OR
+    (AValue.MaxDepth <= 0) OR (AValue.MaxNodes <= 0) then
+    raise EArgumentException.Create('Configuration limits must be positive');
+  FConfigurationOptions:=AValue;
 end;
 
 class function TYAML.CreateArrayRoot: TYAML;
@@ -937,10 +634,16 @@ end;
 
 class function TYAML.FromConfigurationString(const AValue: String): TYAML;
 begin
+  Result:=FromConfigurationString(AValue, DefaultConfigurationOptions);
+end;
+
+class function TYAML.FromConfigurationString(const AValue: String; const AOptions: TYAMLConfigurationOptions): TYAML;
+begin
   Result:=TYAML.Create;
   try
     Result.FEncoding:=yeYAML;
     Result.FConfigurationProfile:=True;
+    Result.ConfigurationOptions:=AOptions;
     Result.ReadFromString(AValue);
   except
     Result.Free;
@@ -950,11 +653,36 @@ end;
 
 class function TYAML.FromConfigurationFile(const AFile: String): TYAML;
 begin
+  Result:=FromConfigurationFile(AFile, DefaultConfigurationOptions);
+end;
+
+class function TYAML.FromConfigurationFile(const AFile: String; const AOptions: TYAMLConfigurationOptions): TYAML;
+begin
   Result:=TYAML.Create;
   try
     Result.FEncoding:=yeYAML;
     Result.FConfigurationProfile:=True;
+    Result.ConfigurationOptions:=AOptions;
     Result.LoadFromFile(AFile);
+  except
+    Result.Free;
+    raise;
+  end;
+end;
+
+class function TYAML.FromConfigurationStream(AStream: TStream): TYAML;
+begin
+  Result:=FromConfigurationStream(AStream, DefaultConfigurationOptions);
+end;
+
+class function TYAML.FromConfigurationStream(AStream: TStream; const AOptions: TYAMLConfigurationOptions): TYAML;
+begin
+  Result:=TYAML.Create;
+  try
+    Result.FEncoding:=yeYAML;
+    Result.FConfigurationProfile:=True;
+    Result.ConfigurationOptions:=AOptions;
+    Result.LoadFromStream(AStream);
   except
     Result.Free;
     raise;
@@ -979,7 +707,6 @@ begin
   end;
 end;
 
-{$IFNDEF FPC}
 class function TYAML.CreateFromRecord<T>(const ARecord: T): TYAML;
 var
   Doc: TTJAXY;
@@ -992,7 +719,24 @@ begin
     Doc.Free;
   end;
 end;
-{$ENDIF}
+
+class function TYAML.CreateFromRecordWithRules<T>(const ARecord: T; const ARules: TTJAXYSerializerRules): TYAML;
+var
+  Doc: TTJAXY;
+begin
+  Doc:=TTJAXY.CreateFromRecordWithRules<T>(ARecord, ARules);
+  try
+    Result:=TYAML.Create;
+    try
+      Result.SetRoot(Doc.Root.Copy);
+    except
+      Result.Free;
+      raise;
+    end;
+  finally
+    Doc.Free;
+  end;
+end;
 
 constructor TYAML.CreateFromStream(AStream: TStream; AEncoding: TYAMLEncoding);
 begin
@@ -1009,8 +753,12 @@ begin
 end;
 
 destructor TYAML.Destroy;
+var
+  I: Integer;
 begin
-  Clear;
+  if FDocuments <> nil then
+    for I:=1 to FDocuments.Count - 1 do
+      TObject(FDocuments[I]).Free;
   FreeAndNil(FDocuments);
   FreeAndNil(FData);
   inherited;
@@ -1019,39 +767,40 @@ end;
 procedure TYAML.Assign(ASource: TPersistent);
 var
   I: Integer;
+  NewDocuments: TList;
 begin
   if ASource IS TYAML then
   begin
-    FData.Clear;
-    for I:=0 to FDocuments.Count - 1 do
-      TObject(FDocuments[I]).Free;
-    FDocuments.Clear;
-    FRoot:=nil;
-    FEncoding:=TYAML(ASource).FEncoding;
-    FWriteDocumentMarker:=TYAML(ASource).FWriteDocumentMarker;
-    for I:=0 to TYAML(ASource).DocumentCount - 1 do
-      FDocuments.Add(TYAML(ASource).Document[I].Copy);
-    if FDocuments.Count = 0 then
-      FDocuments.Add(TYAMLNull.Create);
-    FRoot:=TYAMLValue(FDocuments[0]);
-    SyncTJAXYRoot;
+    if ASource = Self then
+      Exit;
+    NewDocuments:=TList.Create;
+    try
+      for I:=0 to TYAML(ASource).DocumentCount - 1 do
+        NewDocuments.Add(TYAML(ASource).Document[I].Copy);
+      ReplaceDocuments(NewDocuments);
+      NewDocuments:=nil;
+      FData.Clear;
+      FEncoding:=TYAML(ASource).FEncoding;
+      FConfigurationProfile:=TYAML(ASource).FConfigurationProfile;
+      FConfigurationOptions:=TYAML(ASource).FConfigurationOptions;
+      FWriteDocumentMarker:=TYAML(ASource).FWriteDocumentMarker;
+    finally
+      if NewDocuments <> nil then
+      begin
+        for I:=0 to NewDocuments.Count - 1 do
+          TObject(NewDocuments[I]).Free;
+        NewDocuments.Free;
+      end;
+    end;
   end
   else
     inherited;
 end;
 
 procedure TYAML.Clear;
-var
-  I: Integer;
 begin
   FData.Clear;
-  for I:=0 to FDocuments.Count - 1 do
-    TObject(FDocuments[I]).Free;
-  FDocuments.Clear;
-  FRoot:=nil;
-  FRoot:=TYAMLNull.Create;
-  FDocuments.Add(FRoot);
-  SyncTJAXYRoot;
+  SetRoot(TYAMLNull.Create);
 end;
 
 function TYAML.DocumentAsArray(Index: Integer): TYAMLArray;
@@ -1116,32 +865,37 @@ begin
   Result:=AsObject[Key];
 end;
 
-procedure TYAML.SyncTJAXYRoot;
+procedure TYAML.ReplaceDocuments(ANewDocuments: TList);
+var
+  I: Integer;
+  OldDocuments: TList;
 begin
-  inherited SetRoot(YAMLValueToTJAXY(FRoot));
+  if ANewDocuments.Count = 0 then
+    ANewDocuments.Add(TYAMLNull.Create);
+  OldDocuments:=FDocuments;
+  if OldDocuments <> nil then
+    for I:=1 to OldDocuments.Count - 1 do
+      TObject(OldDocuments[I]).Free;
+  FRoot:=TYAMLValue(ANewDocuments[0]);
+  inherited SetRoot(FRoot);
+  FDocuments:=ANewDocuments;
+  OldDocuments.Free;
 end;
 
 procedure TYAML.SetRoot(AValue: TTJAXYValue);
 var
-  I: Integer;
-  NativeRoot: TYAMLValue;
+  NewDocuments: TList;
 begin
-  NativeRoot:=TJAXYValueToYAML(AValue);
+  if AValue = FRoot then
+    Exit;
+  NewDocuments:=TList.Create;
   try
-    inherited SetRoot(AValue);
+    NewDocuments.Add(AValue);
+    ReplaceDocuments(NewDocuments);
   except
-    NativeRoot.Free;
+    NewDocuments.Free;
     raise;
   end;
-
-  if FDocuments = nil then
-    Exit;
-
-  for I:=0 to FDocuments.Count - 1 do
-    TObject(FDocuments[I]).Free;
-  FDocuments.Clear;
-  FRoot:=NativeRoot;
-  FDocuments.Add(FRoot);
 end;
 
 function TYAML.IsEmpty: Boolean;
@@ -1164,23 +918,44 @@ end;
 procedure TYAML.LoadFromStream(AStream: TStream);
 var
   Bytes: TBytes;
-  ByteCount: Integer;
+  Buffer: array[0..8191] of Byte;
+  Accumulated: TMemoryStream;
+  ByteCount, Offset, ReadCount, ReadLimit: Integer;
 begin
   FData.Clear;
   if FConfigurationProfile then
   begin
-    if AStream.Size - AStream.Position > 262144 then
-      raise EYAMLException.Create('Configuration exceeds 262144 bytes', 1, 1);
-    ByteCount:=AStream.Size - AStream.Position;
-    SetLength(Bytes, ByteCount);
-    if ByteCount > 0 then
-      AStream.ReadBuffer(Bytes[0], ByteCount);
-    if NOT YAMLValidUTF8(Bytes) then
+    Accumulated:=TMemoryStream.Create;
+    try
+      while True do
+      begin
+        ReadLimit:=FConfigurationOptions.MaxInputBytes + 1 - Integer(Accumulated.Size);
+        if ReadLimit > SizeOf(Buffer) then
+          ReadLimit:=SizeOf(Buffer);
+        ReadCount:=AStream.Read(Buffer, ReadLimit);
+        if ReadCount = 0 then
+          Break;
+        Accumulated.WriteBuffer(Buffer, ReadCount);
+        if Accumulated.Size > FConfigurationOptions.MaxInputBytes then
+          raise EYAMLException.Create(Format('Configuration exceeds %d bytes', [FConfigurationOptions.MaxInputBytes]), 1, 1);
+      end;
+      ByteCount:=Accumulated.Size;
+      SetLength(Bytes, ByteCount);
+      Accumulated.Position:=0;
+      if ByteCount > 0 then
+        Accumulated.ReadBuffer(Bytes[0], ByteCount);
+    finally
+      Accumulated.Free;
+    end;
+    if NOT TJAXYValidUTF8(Bytes) then
       raise EYAMLException.Create('Configuration must be valid UTF-8 without NUL bytes', 1, 1);
-    if ByteCount > 0 then
-      FData.WriteBuffer(Bytes[0], ByteCount);
+    Offset:=0;
+    if (ByteCount >= 3) AND (Bytes[0] = $EF) AND (Bytes[1] = $BB) AND (Bytes[2] = $BF) then
+      Offset:=3;
+    if ByteCount > Offset then
+      FData.WriteBuffer(Bytes[Offset], ByteCount - Offset);
   end else
-    FData.CopyFrom(AStream, 0);
+    FData.WriteString(TJAXYReadUTF8(AStream));
   FData.Position:=0;
   Parse;
 end;
@@ -1190,106 +965,90 @@ var
   Parser: TYAMLParser;
   BlockParser: TYAMLBlockParser;
   I: Integer;
+  NewDocuments: TList;
 begin
-  for I:=0 to FDocuments.Count - 1 do
-    TObject(FDocuments[I]).Free;
-  FDocuments.Clear;
-  FRoot:=nil;
-
-  case FEncoding of
-    yeKYAML:
-      begin
-        Parser:=TYAMLParser.Create(FData.DataString);
-        try
-          FRoot:=Parser.Parse;
-          FDocuments.Add(FRoot);
-        finally
-          Parser.Free;
+  NewDocuments:=TList.Create;
+  try
+    case FEncoding of
+      yeKYAML:
+        begin
+          Parser:=TYAMLParser.Create(FData.DataString);
+          try
+            NewDocuments.Add(Parser.Parse);
+          finally
+            Parser.Free;
+          end;
         end;
-      end;
-    yeYAML:
-      begin
-        BlockParser:=TYAMLBlockParser.Create(FData.DataString, FConfigurationProfile);
-        try
-          BlockParser.ParseDocuments(FDocuments);
-          if FConfigurationProfile AND (FDocuments.Count <> 1) then
-            raise EYAMLException.Create('Configuration requires one document', 1, 1);
-          if FDocuments.Count = 0 then
-            FDocuments.Add(TYAMLNull.Create);
-          FRoot:=TYAMLValue(FDocuments[0]);
-        finally
-          BlockParser.Free;
+      yeYAML:
+        begin
+          BlockParser:=TYAMLBlockParser.Create(FData.DataString, FConfigurationProfile,
+            FConfigurationOptions.MaxDepth, FConfigurationOptions.MaxNodes);
+          try
+            BlockParser.ParseDocuments(NewDocuments);
+            if FConfigurationProfile AND (NewDocuments.Count <> 1) then
+              raise EYAMLException.Create('Configuration requires one document', 1, 1);
+          finally
+            BlockParser.Free;
+          end;
         end;
-      end;
-  else
-    raise Exception.Create(RCS_UNSUPPORTED_ENCODING);
+    else
+      raise Exception.Create(RCS_UNSUPPORTED_ENCODING);
+    end;
+    ReplaceDocuments(NewDocuments);
+    NewDocuments:=nil;
+  finally
+    if NewDocuments <> nil then
+    begin
+      for I:=0 to NewDocuments.Count - 1 do
+        TObject(NewDocuments[I]).Free;
+      NewDocuments.Free;
+    end;
   end;
-
-  if FRoot = nil then
-  begin
-    FRoot:=TYAMLNull.Create;
-    FDocuments.Add(FRoot);
-  end;
-  SyncTJAXYRoot;
 end;
 
 procedure TYAML.ReadFromString(const AValue: String);
 var
   Bytes: TBytes;
-  I: Integer;
-  {$IFNDEF FPC}
-  Encoded: UTF8String;
-  {$ENDIF}
+  Offset: Integer;
 begin
+  TJAXYRequireValidText(AValue);
   if FConfigurationProfile then
   begin
-    {$IFDEF FPC}
-    SetLength(Bytes, Length(AValue));
-    for I:=1 to Length(AValue) do
-      Bytes[I - 1]:=Ord(AValue[I]);
-    {$ELSE}
-    Encoded:=UTF8Encode(AValue);
-    SetLength(Bytes, Length(Encoded));
-    for I:=1 to Length(Encoded) do
-      Bytes[I - 1]:=Ord(Encoded[I]);
-    {$ENDIF}
-    if Length(Bytes) > 262144 then
-      raise EYAMLException.Create('Configuration exceeds 262144 bytes', 1, 1);
-    if NOT YAMLValidUTF8(Bytes) then
+    if Length(AValue) > FConfigurationOptions.MaxInputBytes then
+      raise EYAMLException.Create(Format('Configuration exceeds %d bytes', [FConfigurationOptions.MaxInputBytes]), 1, 1);
+    Bytes:=TEncoding.UTF8.GetBytes(AValue);
+    if Length(Bytes) > FConfigurationOptions.MaxInputBytes then
+      raise EYAMLException.Create(Format('Configuration exceeds %d bytes', [FConfigurationOptions.MaxInputBytes]), 1, 1);
+    if NOT TJAXYValidUTF8(Bytes) then
       raise EYAMLException.Create('Configuration must be valid UTF-8 without NUL bytes', 1, 1);
   end;
   FData.Clear;
-  FData.WriteString(AValue);
+  if FConfigurationProfile then
+  begin
+    Offset:=0;
+    if (Length(Bytes) >= 3) AND (Bytes[0] = $EF) AND (Bytes[1] = $BB) AND (Bytes[2] = $BF) then
+      Offset:=3;
+    if Length(Bytes) > Offset then
+      FData.WriteBuffer(Bytes[Offset], Length(Bytes) - Offset);
+  end
+  else
+    FData.WriteString(AValue);
   FData.Position:=0;
   Parse;
 end;
 
 function TYAML.RootNewArray: TYAMLArray;
-var
-  I: Integer;
 begin
   FData.Clear;
-  for I:=0 to FDocuments.Count - 1 do
-    TObject(FDocuments[I]).Free;
-  FDocuments.Clear;
   Result:=TYAMLArray.Create;
-  FRoot:=Result;
-  FDocuments.Add(FRoot);
-  SyncTJAXYRoot;
+  SetRoot(Result);
 end;
 
 function TYAML.RootNewObject: TYAMLObject;
-var
-  I: Integer;
 begin
   FData.Clear;
-  for I:=0 to FDocuments.Count - 1 do
-    TObject(FDocuments[I]).Free;
-  FDocuments.Clear;
   Result:=TYAMLObject.Create;
-  FRoot:=Result;
-  FDocuments.Add(FRoot);
-  SyncTJAXYRoot;
+  SetRoot(Result);
 end;
 
 procedure TYAML.SaveToFile(const AFileName: String);
@@ -1302,8 +1061,7 @@ var
   S: String;
 begin
   S:=WriteToString;
-  if S <> '' then
-    AStream.WriteBuffer(Pointer(S)^, Length(S) * SizeOf(Char));
+  TJAXYWriteUTF8(AStream, S);
 end;
 
 function TYAML.WriteToFile(const AFileName: String; AWriteMode: TYAMLStringWriteMode): String;
@@ -1313,8 +1071,7 @@ begin
   Result:=WriteToString(AWriteMode);
   Stream:=TFileStream.Create(AFileName, fmCreate);
   try
-    if Result <> '' then
-      Stream.WriteBuffer(Pointer(Result)^, Length(Result) * SizeOf(Char));
+    TJAXYWriteUTF8(Stream, Result);
   finally
     Stream.Free;
   end;
@@ -1354,828 +1111,32 @@ begin
   Result:=WriteToString(TJAXYWriteModeToYAML(AWriteMode));
 end;
 
-{ TYAMLValue }
+{ TYAMLParser }
 
-constructor TYAMLValue.Create;
+constructor TYAMLParseBudget.Create(AMaxNodes: Integer);
 begin
-  inherited;
+  inherited Create;
+  MaxNodes:=AMaxNodes;
 end;
 
-function TYAMLValue.Copy: TYAMLValue;
-var
-  I: Integer;
+function YAMLConfigurationKeyError(AObject: TYAMLObject; const AKey: String): String;
 begin
-  if Self IS TYAMLNull then
-    Result:=TYAMLNull.Create
-  else if Self IS TYAMLString then
-    Result:=TYAMLString.CreateFrom(AsString)
-  else if Self IS TYAMLInteger then
-    Result:=TYAMLInteger.CreateFrom(AsInteger)
-  else if Self IS TYAMLFloat then
-    Result:=TYAMLFloat.CreateFrom(AsFloat)
-  else if Self IS TYAMLBoolean then
-    Result:=TYAMLBoolean.CreateFrom(AsBoolean)
-  else if Self IS TYAMLObject then
-    Result:=TYAMLObject.CreateFrom(TYAMLObject(Self))
-  else if Self IS TYAMLArray then
-  begin
-    Result:=TYAMLArray.Create;
-    for I:=0 to TYAMLArray(Self).Count - 1 do
-      TYAMLArray(Result).Add(TYAMLArray(Self).Item[I].Copy);
-  end
-  else
-    Result:=nil;
-end;
-
-function TYAMLValue.GetClass: TYAMLClass;
-begin
-  Result:=TYAMLValue;
-end;
-
-function TYAMLValue.GetIsArray: Boolean;
-begin
-  Result:=Self IS TYAMLArray;
-end;
-
-function TYAMLValue.GetIsBoolean: Boolean;
-begin
-  Result:=Self IS TYAMLBoolean;
-end;
-
-function TYAMLValue.GetIsFloat: Boolean;
-begin
-  Result:=Self IS TYAMLFloat;
-end;
-
-function TYAMLValue.GetIsInteger: Boolean;
-begin
-  Result:=Self IS TYAMLInteger;
-end;
-
-function TYAMLValue.GetIsNull: Boolean;
-begin
-  Result:=Self IS TYAMLNull;
-end;
-
-function TYAMLValue.GetIsObject: Boolean;
-begin
-  Result:=Self IS TYAMLObject;
-end;
-
-function TYAMLValue.GetIsString: Boolean;
-begin
-  Result:=Self IS TYAMLString;
-end;
-
-function TYAMLValue.GetTyp: TYAMLType;
-begin
-  if Self IS TYAMLNull then
-    Result:=kytNull
-  else if Self IS TYAMLInteger then
-    Result:=kytInteger
-  else if Self IS TYAMLFloat then
-    Result:=kytFloat
-  else if Self IS TYAMLString then
-    Result:=kytString
-  else if Self IS TYAMLBoolean then
-    Result:=kytBoolean
-  else if Self IS TYAMLObject then
-    Result:=kytObject
-  else
-    Result:=kytArray;
-end;
-
-{ TYAMLNull }
-
-constructor TYAMLNull.Create;
-begin
-  inherited;
-end;
-
-function TYAMLNull.GetAsArray: TYAMLArray;
-begin
-  Result:=YAMLInvalidArray;
-end;
-
-function TYAMLNull.GetAsBoolean: Boolean;
-begin
-  Result:=YAMLInvalidBoolean;
-end;
-
-function TYAMLNull.GetAsFloat: Extended;
-begin
-  Result:=YAMLInvalidFloat;
-end;
-
-function TYAMLNull.GetAsInteger: Int64;
-begin
-  Result:=YAMLInvalidInteger;
-end;
-
-function TYAMLNull.GetAsObject: TYAMLObject;
-begin
-  Result:=YAMLInvalidObject;
-end;
-
-function TYAMLNull.GetAsString: String;
-begin
+  if (AKey = '<<') AND NOT YAMLProfileAllows(True, yrfMergeKeys) then
+    Exit('Configuration does not allow merge keys');
+  if AObject.HasKey(AKey) then
+    Exit(Format(RCS_DUPLICATE_KEY, [AKey]));
   Result:='';
 end;
 
-function TYAMLNull.GetClass: TYAMLClass;
+function TYAMLParseBudget.Charge: Boolean;
 begin
-  Result:=TYAMLNull;
+  Result:=Nodes < MaxNodes;
+  if Result then
+    Inc(Nodes);
 end;
 
-function TYAMLNull.IsEmpty: Boolean;
-begin
-  Result:=True;
-end;
-
-{ TYAMLString }
-
-constructor TYAMLString.Create;
-begin
-  inherited;
-  FValue:='';
-end;
-
-constructor TYAMLString.CreateFrom(AValue: String);
-begin
-  Create;
-  FValue:=AValue;
-end;
-
-function TYAMLString.GetAsArray: TYAMLArray;
-begin
-  Result:=YAMLInvalidArray;
-end;
-
-function TYAMLString.GetAsBoolean: Boolean;
-begin
-  Result:=YAMLInvalidBoolean;
-end;
-
-function TYAMLString.GetAsFloat: Extended;
-begin
-  Result:=YAMLInvalidFloat;
-end;
-
-function TYAMLString.GetAsInteger: Int64;
-begin
-  Result:=YAMLInvalidInteger;
-end;
-
-function TYAMLString.GetAsObject: TYAMLObject;
-begin
-  Result:=YAMLInvalidObject;
-end;
-
-function TYAMLString.GetAsString: String;
-begin
-  Result:=FValue;
-end;
-
-function TYAMLString.GetClass: TYAMLClass;
-begin
-  Result:=TYAMLString;
-end;
-
-function TYAMLString.IsEmpty: Boolean;
-begin
-  Result:=FValue = '';
-end;
-
-{ TYAMLInteger }
-
-constructor TYAMLInteger.Create;
-begin
-  inherited;
-  FValue:=0;
-end;
-
-constructor TYAMLInteger.CreateFrom(AValue: Int64);
-begin
-  Create;
-  FValue:=AValue;
-end;
-
-function TYAMLInteger.GetAsArray: TYAMLArray;
-begin
-  Result:=YAMLInvalidArray;
-end;
-
-function TYAMLInteger.GetAsBoolean: Boolean;
-begin
-  Result:=YAMLInvalidBoolean;
-end;
-
-function TYAMLInteger.GetAsFloat: Extended;
-begin
-  Result:=FValue;
-end;
-
-function TYAMLInteger.GetAsInteger: Int64;
-begin
-  Result:=FValue;
-end;
-
-function TYAMLInteger.GetAsObject: TYAMLObject;
-begin
-  Result:=YAMLInvalidObject;
-end;
-
-function TYAMLInteger.GetAsString: String;
-begin
-  Result:=IntToStr(FValue);
-end;
-
-function TYAMLInteger.GetClass: TYAMLClass;
-begin
-  Result:=TYAMLInteger;
-end;
-
-function TYAMLInteger.IsEmpty: Boolean;
-begin
-  Result:=FValue = 0;
-end;
-
-{ TYAMLFloat }
-
-constructor TYAMLFloat.Create;
-begin
-  inherited;
-  FValue:=0;
-end;
-
-constructor TYAMLFloat.CreateFrom(AValue: Extended);
-begin
-  Create;
-  FValue:=AValue;
-end;
-
-function TYAMLFloat.GetAsArray: TYAMLArray;
-begin
-  Result:=YAMLInvalidArray;
-end;
-
-function TYAMLFloat.GetAsBoolean: Boolean;
-begin
-  Result:=YAMLInvalidBoolean;
-end;
-
-function TYAMLFloat.GetAsFloat: Extended;
-begin
-  Result:=FValue;
-end;
-
-function TYAMLFloat.GetAsInteger: Int64;
-begin
-  Result:=Trunc(FValue);
-end;
-
-function TYAMLFloat.GetAsObject: TYAMLObject;
-begin
-  Result:=YAMLInvalidObject;
-end;
-
-function TYAMLFloat.GetAsString: String;
-begin
-  Result:=FloatToStr(FValue, YAMLFormatSettings);
-end;
-
-function TYAMLFloat.GetClass: TYAMLClass;
-begin
-  Result:=TYAMLFloat;
-end;
-
-function TYAMLFloat.IsEmpty: Boolean;
-begin
-  Result:=SameValue(FValue, 0);
-end;
-
-{ TYAMLBoolean }
-
-constructor TYAMLBoolean.Create;
-begin
-  inherited;
-  FValue:=False;
-end;
-
-constructor TYAMLBoolean.CreateFrom(AValue: Boolean);
-begin
-  Create;
-  FValue:=AValue;
-end;
-
-function TYAMLBoolean.GetAsArray: TYAMLArray;
-begin
-  Result:=YAMLInvalidArray;
-end;
-
-function TYAMLBoolean.GetAsBoolean: Boolean;
-begin
-  Result:=FValue;
-end;
-
-function TYAMLBoolean.GetAsFloat: Extended;
-begin
-  Result:=YAMLInvalidFloat;
-end;
-
-function TYAMLBoolean.GetAsInteger: Int64;
-begin
-  Result:=YAMLInvalidInteger;
-end;
-
-function TYAMLBoolean.GetAsObject: TYAMLObject;
-begin
-  Result:=YAMLInvalidObject;
-end;
-
-function TYAMLBoolean.GetAsString: String;
-begin
-  if FValue then
-    Result:=YAML_LITERAL_TRUE
-  else
-    Result:=YAML_LITERAL_FALSE;
-end;
-
-function TYAMLBoolean.GetClass: TYAMLClass;
-begin
-  Result:=TYAMLBoolean;
-end;
-
-function TYAMLBoolean.IsEmpty: Boolean;
-begin
-  Result:=NOT FValue;
-end;
-
-{ TYAMLObject }
-
-constructor TYAMLObject.Create;
-begin
-  inherited;
-  FKeys:=TStringList.Create;
-  FKeys.Sorted:=False;
-  FKeys.CaseSensitive:=True;
-  FKeys.Duplicates:=dupError;
-end;
-
-constructor TYAMLObject.CreateFrom(AObject: TYAMLObject);
-var
-  I: Integer;
-begin
-  Create;
-  for I:=0 to AObject.Count - 1 do
-    Add(AObject.Name[I], AObject.Item[I].Copy);
-end;
-
-destructor TYAMLObject.Destroy;
-begin
-  Clear;
-  FreeAndNil(FKeys);
-  inherited;
-end;
-
-procedure TYAMLObject.Add(AKey: String);
-begin
-  Add(AKey, TYAMLNull.Create);
-end;
-
-procedure TYAMLObject.Add(AKey: String; AValue: String);
-begin
-  Add(AKey, TYAMLString.CreateFrom(AValue));
-end;
-
-procedure TYAMLObject.Add(AKey: String; AValue: Int64);
-begin
-  Add(AKey, TYAMLInteger.CreateFrom(AValue));
-end;
-
-procedure TYAMLObject.Add(AKey: String; AValue: Extended);
-begin
-  Add(AKey, TYAMLFloat.CreateFrom(AValue));
-end;
-
-procedure TYAMLObject.Add(AKey: String; AValue: Boolean);
-begin
-  Add(AKey, TYAMLBoolean.CreateFrom(AValue));
-end;
-
-procedure TYAMLObject.Add(AKey: String; AValue: TYAMLValue);
-begin
-  if HasKey(AKey) then
-  begin
-    AValue.Free;
-    raise Exception.CreateFmt(RCS_DUPLICATE_KEY, [AKey]);
-  end;
-  FKeys.AddObject(AKey, AValue);
-end;
-
-procedure TYAMLObject.AddArray(AKey: String; AArray: TYAMLArray);
-begin
-  Add(AKey, AArray);
-end;
-
-function TYAMLObject.AddArray(AKey: String): TYAMLArray;
-begin
-  Result:=TYAMLArray.Create;
-  Add(AKey, Result);
-end;
-
-procedure TYAMLObject.AddObject(AKey: String; AObject: TYAMLObject);
-begin
-  Add(AKey, AObject);
-end;
-
-function TYAMLObject.AddObject(AKey: String): TYAMLObject;
-begin
-  Result:=TYAMLObject.Create;
-  Add(AKey, Result);
-end;
-
-procedure TYAMLObject.Clear;
-var
-  I: Integer;
-begin
-  for I:=0 to FKeys.Count - 1 do
-    FKeys.Objects[I].Free;
-  FKeys.Clear;
-end;
-
-procedure TYAMLObject.Delete(AKey: String);
-var
-  I: Integer;
-begin
-  I:=IndexOf(AKey);
-  if I >= 0 then
-  begin
-    FKeys.Objects[I].Free;
-    FKeys.Delete(I);
-  end;
-end;
-
-function TYAMLObject.GetAsArray: TYAMLArray;
-begin
-  Result:=YAMLInvalidArray;
-end;
-
-function TYAMLObject.GetAsBoolean: Boolean;
-begin
-  Result:=YAMLInvalidBoolean;
-end;
-
-function TYAMLObject.GetAsFloat: Extended;
-begin
-  Result:=YAMLInvalidFloat;
-end;
-
-function TYAMLObject.GetAsInteger: Int64;
-begin
-  Result:=YAMLInvalidInteger;
-end;
-
-function TYAMLObject.GetAsObject: TYAMLObject;
-begin
-  Result:=Self;
-end;
-
-function TYAMLObject.GetAsString: String;
-begin
-  Result:=ToString;
-end;
-
-function TYAMLObject.GetClass: TYAMLClass;
-begin
-  Result:=TYAMLObject;
-end;
-
-function TYAMLObject.GetCount: Integer;
-begin
-  Result:=FKeys.Count;
-end;
-
-function TYAMLObject.GetItem(Index: Integer): TYAMLValue;
-begin
-  Result:=TYAMLValue(FKeys.Objects[Index]);
-end;
-
-function TYAMLObject.GetName(Index: Integer): String;
-begin
-  Result:=FKeys[Index];
-end;
-
-function TYAMLObject.GetOrAdd(AKey, ADefault: String): String;
-begin
-  if NOT HasKey(AKey) then
-    Add(AKey, ADefault);
-  Result:=Value[AKey].AsString;
-end;
-
-function TYAMLObject.GetOrAdd(AKey: String; ADefault: Int64): Int64;
-begin
-  if NOT HasKey(AKey) then
-    Add(AKey, ADefault);
-  Result:=Value[AKey].AsInteger;
-end;
-
-function TYAMLObject.GetOrAdd(AKey: String; ADefault: Extended): Extended;
-begin
-  if NOT HasKey(AKey) then
-    Add(AKey, ADefault);
-  Result:=Value[AKey].AsFloat;
-end;
-
-function TYAMLObject.GetOrAdd(AKey: String; ADefault: Boolean): Boolean;
-begin
-  if NOT HasKey(AKey) then
-    Add(AKey, ADefault);
-  Result:=Value[AKey].AsBoolean;
-end;
-
-function TYAMLObject.GetOrAddArray(AKey: String): TYAMLArray;
-begin
-  if NOT HasKey(AKey) then
-    Result:=AddArray(AKey)
-  else if Value[AKey] IS TYAMLArray then
-    Result:=Value[AKey].AsArray
-  else
-  begin
-    SetOrAdd(AKey, TYAMLArray.Create);
-    Result:=Value[AKey].AsArray;
-  end;
-end;
-
-function TYAMLObject.GetOrAddObject(AKey: String): TYAMLObject;
-begin
-  if NOT HasKey(AKey) then
-    Result:=AddObject(AKey)
-  else if Value[AKey] IS TYAMLObject then
-    Result:=Value[AKey].AsObject
-  else
-  begin
-    SetOrAdd(AKey, TYAMLObject.Create);
-    Result:=Value[AKey].AsObject;
-  end;
-end;
-
-function TYAMLObject.GetValue(Key: String): TYAMLValue;
-var
-  I: Integer;
-begin
-  I:=IndexOf(Key);
-  if I >= 0 then
-    Result:=TYAMLValue(FKeys.Objects[I])
-  else
-    Result:=nil;
-end;
-
-function TYAMLObject.HasKey(AKey: String): Boolean;
-begin
-  Result:=IndexOf(AKey) >= 0;
-end;
-
-function TYAMLObject.IndexOf(AKey: String): Integer;
-var
-  I: Integer;
-begin
-  Result:=-1;
-  for I:=0 to FKeys.Count - 1 do
-    if FKeys[I] = AKey then
-      Exit(I);
-end;
-
-function TYAMLObject.IsEmpty: Boolean;
-begin
-  Result:=FKeys.Count = 0;
-end;
-
-procedure TYAMLObject.SetOrAdd(AKey: String);
-begin
-  SetOrAdd(AKey, TYAMLNull.Create);
-end;
-
-procedure TYAMLObject.SetOrAdd(AKey, AValue: String);
-begin
-  SetOrAdd(AKey, TYAMLString.CreateFrom(AValue));
-end;
-
-procedure TYAMLObject.SetOrAdd(AKey: String; AValue: Int64);
-begin
-  SetOrAdd(AKey, TYAMLInteger.CreateFrom(AValue));
-end;
-
-procedure TYAMLObject.SetOrAdd(AKey: String; AValue: Extended);
-begin
-  SetOrAdd(AKey, TYAMLFloat.CreateFrom(AValue));
-end;
-
-procedure TYAMLObject.SetOrAdd(AKey: String; AValue: Boolean);
-begin
-  SetOrAdd(AKey, TYAMLBoolean.CreateFrom(AValue));
-end;
-
-procedure TYAMLObject.SetOrAdd(AKey: String; AValue: TYAMLValue);
-var
-  I: Integer;
-begin
-  I:=IndexOf(AKey);
-  if I < 0 then
-    Add(AKey, AValue)
-  else
-  begin
-    FKeys.Objects[I].Free;
-    FKeys.Objects[I]:=AValue;
-  end;
-end;
-
-function TYAMLObject.ToString: String;
-var
-  Writer: TYAMLWriter;
-begin
-  Writer:=TYAMLWriter.Create(ywmCondensed);
-  try
-    Result:=Writer.Write(Self, False);
-  finally
-    Writer.Free;
-  end;
-end;
-
-{ TYAMLArray }
-
-constructor TYAMLArray.Create;
-begin
-  inherited;
-  FValues:=TList.Create;
-end;
-
-destructor TYAMLArray.Destroy;
-begin
-  Clear;
-  FreeAndNil(FValues);
-  inherited;
-end;
-
-procedure TYAMLArray.Add;
-begin
-  Add(TYAMLNull.Create);
-end;
-
-procedure TYAMLArray.Add(AValue: String);
-begin
-  Add(TYAMLString.CreateFrom(AValue));
-end;
-
-procedure TYAMLArray.Add(AValue: Int64);
-begin
-  Add(TYAMLInteger.CreateFrom(AValue));
-end;
-
-procedure TYAMLArray.Add(AValue: Extended);
-begin
-  Add(TYAMLFloat.CreateFrom(AValue));
-end;
-
-procedure TYAMLArray.Add(AValue: Boolean);
-begin
-  Add(TYAMLBoolean.CreateFrom(AValue));
-end;
-
-procedure TYAMLArray.Add(AValue: TYAMLValue);
-begin
-  FValues.Add(AValue);
-end;
-
-procedure TYAMLArray.AddArray(AArray: TYAMLArray);
-begin
-  Add(AArray);
-end;
-
-function TYAMLArray.AddArray: TYAMLArray;
-begin
-  Result:=TYAMLArray.Create;
-  Add(Result);
-end;
-
-procedure TYAMLArray.AddObject(AObject: TYAMLObject);
-begin
-  Add(AObject);
-end;
-
-function TYAMLArray.AddObject: TYAMLObject;
-begin
-  Result:=TYAMLObject.Create;
-  Add(Result);
-end;
-
-function TYAMLArray.AddObject(AKey: String; AValue: TYAMLValue): TYAMLObject;
-begin
-  Result:=AddObject;
-  Result.Add(AKey, AValue);
-end;
-
-procedure TYAMLArray.Clear;
-var
-  I: Integer;
-begin
-  for I:=0 to FValues.Count - 1 do
-    TObject(FValues[I]).Free;
-  FValues.Clear;
-end;
-
-procedure TYAMLArray.Delete(AIndex: Integer);
-begin
-  TObject(FValues[AIndex]).Free;
-  FValues.Delete(AIndex);
-end;
-
-procedure TYAMLArray.Exchange(AIndex1, AIndex2: Integer);
-begin
-  FValues.Exchange(AIndex1, AIndex2);
-end;
-
-function TYAMLArray.GetAsArray: TYAMLArray;
-begin
-  Result:=Self;
-end;
-
-function TYAMLArray.GetAsBoolean: Boolean;
-begin
-  Result:=YAMLInvalidBoolean;
-end;
-
-function TYAMLArray.GetAsFloat: Extended;
-begin
-  Result:=YAMLInvalidFloat;
-end;
-
-function TYAMLArray.GetAsInteger: Int64;
-begin
-  Result:=YAMLInvalidInteger;
-end;
-
-function TYAMLArray.GetAsObject: TYAMLObject;
-begin
-  Result:=YAMLInvalidObject;
-end;
-
-function TYAMLArray.GetAsString: String;
-begin
-  Result:=ToString;
-end;
-
-function TYAMLArray.GetClass: TYAMLClass;
-begin
-  Result:=TYAMLArray;
-end;
-
-function TYAMLArray.GetCount: Integer;
-begin
-  Result:=FValues.Count;
-end;
-
-function TYAMLArray.GetItem(Index: Integer): TYAMLValue;
-begin
-  Result:=TYAMLValue(FValues[Index]);
-end;
-
-procedure TYAMLArray.Insert(AIndex: Integer; AValue: TYAMLValue);
-begin
-  FValues.Insert(AIndex, AValue);
-end;
-
-function TYAMLArray.IsEmpty: Boolean;
-begin
-  Result:=FValues.Count = 0;
-end;
-
-procedure TYAMLArray.Move(ACurIndex, ANewIndex: Integer);
-begin
-  FValues.Move(ACurIndex, ANewIndex);
-end;
-
-procedure TYAMLArray.Replace(AIndex: Integer; AValue: TYAMLValue);
-begin
-  TObject(FValues[AIndex]).Free;
-  FValues[AIndex]:=AValue;
-end;
-
-function TYAMLArray.ToString: String;
-var
-  Writer: TYAMLWriter;
-begin
-  Writer:=TYAMLWriter.Create(ywmCondensed);
-  try
-    Result:=Writer.Write(Self, False);
-  finally
-    Writer.Free;
-  end;
-end;
-
-{ TYAMLParser }
-
-constructor TYAMLParser.Create(AText: String; AStrictKYAML: Boolean; AConfigurationProfile: Boolean; AMaxDepth, AMaxNodes: Integer);
+constructor TYAMLParser.Create(AText: String; AStrictKYAML: Boolean; AConfigurationProfile: Boolean;
+  AMaxDepth, AMaxNodes: Integer; ABudget: TYAMLParseBudget);
 begin
   inherited Create;
   FText:=AText;
@@ -2185,7 +1146,23 @@ begin
   FStrictKYAML:=AStrictKYAML;
   FConfigurationProfile:=AConfigurationProfile;
   FMaxDepth:=AMaxDepth;
-  FMaxNodes:=AMaxNodes;
+  FBudget:=ABudget;
+  FOwnsBudget:=FBudget = nil;
+  if FOwnsBudget then
+    FBudget:=TYAMLParseBudget.Create(AMaxNodes);
+end;
+
+destructor TYAMLParser.Destroy;
+begin
+  if FOwnsBudget then
+    FBudget.Free;
+  inherited;
+end;
+
+procedure TYAMLParser.CountNode;
+begin
+  if FConfigurationProfile AND NOT FBudget.Charge then
+    Error(Format('Configuration exceeds %d nodes', [FBudget.MaxNodes]));
 end;
 
 procedure TYAMLParser.Advance;
@@ -2210,9 +1187,15 @@ begin
     Exit;
 
   case CharToYAML(Current) of
-    ycAmpersand: Error(Format(RCS_FORBIDDEN_YAML_FEATURE, [YAML_FEATURE_ANCHORS]));
-    ycAsterisk: Error(Format(RCS_FORBIDDEN_YAML_FEATURE, [YAML_FEATURE_ALIASES]));
-    ycExclamation: Error(Format(RCS_FORBIDDEN_YAML_FEATURE, [YAML_FEATURE_TAGS]));
+    ycAmpersand:
+      if FStrictKYAML OR NOT YAMLProfileAllows(FConfigurationProfile, yrfAnchors) then
+        Error(Format(RCS_FORBIDDEN_YAML_FEATURE, [YAML_FEATURE_ANCHORS]));
+    ycAsterisk:
+      if FStrictKYAML OR NOT YAMLProfileAllows(FConfigurationProfile, yrfAliases) then
+        Error(Format(RCS_FORBIDDEN_YAML_FEATURE, [YAML_FEATURE_ALIASES]));
+    ycExclamation:
+      if FStrictKYAML OR NOT YAMLProfileAllows(FConfigurationProfile, yrfTags) then
+        Error(Format(RCS_FORBIDDEN_YAML_FEATURE, [YAML_FEATURE_TAGS]));
     ycPipe, ycGreaterThan: Error(Format(RCS_FORBIDDEN_YAML_FEATURE, [YAML_FEATURE_BLOCK_SCALARS]));
   end;
 end;
@@ -2291,7 +1274,7 @@ begin
       SkipWhite;
       if (NOT FStrictKYAML) AND (CharToYAML(Current) = ycColon) then
       begin
-        if FConfigurationProfile then
+        if NOT YAMLProfileAllows(FConfigurationProfile, yrfImplicitFlowMapping) then
         begin
           Value.Free;
           Error('Configuration does not allow implicit flow mapping entries');
@@ -2371,7 +1354,7 @@ end;
 
 function TYAMLParser.ParseObject: TYAMLObject;
 var
-  Key: String;
+  Key, KeyError: String;
   Value: TYAMLValue;
 begin
   Result:=TYAMLObject.Create;
@@ -2390,13 +1373,15 @@ begin
       SkipWhite;
       if (CharToYAML(Current) = ycRightBrace) AND NOT FStrictKYAML then
         Break;
+      if FConfigurationProfile AND (FDepth >= FMaxDepth) then
+        Error(Format('Configuration exceeds %d nesting levels', [FMaxDepth]));
+      CountNode;
       Key:=ParseKey;
       if FConfigurationProfile then
       begin
-        if Key = '<<' then
-          Error('Configuration does not allow merge keys');
-        if Result.HasKey(Key) then
-          Error(Format(RCS_DUPLICATE_KEY, [Key]));
+        KeyError:=YAMLConfigurationKeyError(Result, Key);
+        if KeyError <> '' then
+          Error(KeyError);
       end;
       SkipWhite;
       if CharToYAML(Current) = ycColon then
@@ -2404,7 +1389,15 @@ begin
         Advance;
         SkipWhite;
         if (NOT FStrictKYAML) AND IsYAMLChar(Current, [ycComma, ycRightBrace]) then
+        begin
+          if FConfigurationProfile then
+          begin
+            CountNode;
+          end;
           Value:=TYAMLNull.Create
+        end
+        else if FConfigurationProfile then
+          Value:=ParseValue
         else if (NOT FStrictKYAML) AND (CharInSet(Current, ['0'..'9']) OR ((CharToYAML(Current) = ycDash) AND CharInSet(Peek, ['0'..'9']))) then
           Value:=ReadNumber
         else
@@ -2413,7 +1406,13 @@ begin
       else if FStrictKYAML then
         Expect(YAML_CHARS[ycColon])
       else
+      begin
+        if FConfigurationProfile then
+        begin
+          CountNode;
+        end;
         Value:=TYAMLNull.Create;
+      end;
       Result.Add(Key, Value);
       SkipWhite;
       if CharToYAML(Current) = ycComma then
@@ -2441,11 +1440,9 @@ begin
   if FConfigurationProfile then
   begin
     Inc(FDepth);
-    Inc(FNodes);
+    CountNode;
     if FDepth > FMaxDepth then
-      Error('Configuration exceeds 32 nesting levels');
-    if FNodes > FMaxNodes then
-      Error('Configuration exceeds 10000 nodes');
+      Error(Format('Configuration exceeds %d nesting levels', [FMaxDepth]));
   end;
 
   case CharToYAML(Current) of
@@ -2520,7 +1517,8 @@ var
   Value: TYAMLValue;
 begin
   SkipWhite;
-  if FConfigurationProfile AND CharInSet(Current, ['?', '[', '{', '&', '*', '!']) then
+  if NOT YAMLProfileAllows(FConfigurationProfile, yrfComplexKeys) AND
+    CharInSet(Current, ['?', '[', '{', '&', '*', '!']) then
     Error('Configuration mapping keys must be strings');
   if Current = YAML_CHARS[ycQuestion] then
   begin
@@ -2591,9 +1589,13 @@ begin
   begin
     if Result = '' then
       Error('Configuration mapping keys must be strings');
-    if (Result = 'null') OR (Result = 'true') OR (Result = 'false') OR CharInSet(Result[1], ['0'..'9']) OR
-      ((Result[1] = '-') AND (Length(Result) > 1) AND CharInSet(Result[2], ['0'..'9'])) then
-      Error('Configuration mapping keys must be strings');
+    Value:=ResolveScalar(Result);
+    try
+      if NOT Value.IsString then
+        Error('Configuration mapping keys must be strings');
+    finally
+      Value.Free;
+    end;
   end;
 end;
 
@@ -2949,9 +1951,8 @@ procedure TYAMLBlockParser.CountNode(ALine, AColumn: Integer);
 begin
   if NOT FConfigurationProfile then
     Exit;
-  Inc(FNodes);
-  if FNodes > 10000 then
-    Error('Configuration exceeds 10000 nodes', ALine, AColumn);
+  if NOT FBudget.Charge then
+    Error(Format('Configuration exceeds %d nodes', [FBudget.MaxNodes]), ALine, AColumn);
 end;
 
 function TYAMLBlockParser.AliasValue(const AName: String; ALineNo, AColumn: Integer): TYAMLValue;
@@ -2986,7 +1987,7 @@ begin
     raise Exception.Create(RCS_INVALID_MERGE_VALUE);
 end;
 
-constructor TYAMLBlockParser.Create(AText: String; AConfigurationProfile: Boolean);
+constructor TYAMLBlockParser.Create(AText: String; AConfigurationProfile: Boolean; AMaxDepth, AMaxNodes, AFirstLine: Integer);
 begin
   inherited Create;
   FLines:=TStringList.Create;
@@ -2996,11 +1997,15 @@ begin
   FAnchors.OwnsObjects:=True;
   FIndex:=0;
   FConfigurationProfile:=AConfigurationProfile;
+  FMaxDepth:=AMaxDepth;
+  FBudget:=TYAMLParseBudget.Create(AMaxNodes);
+  FLineOffset:=AFirstLine - 1;
   Load(AText);
 end;
 
 destructor TYAMLBlockParser.Destroy;
 begin
+  FBudget.Free;
   FreeAndNil(FAnchors);
   FreeAndNil(FLines);
   inherited;
@@ -3068,7 +2073,7 @@ end;
 
 procedure TYAMLBlockParser.Error(const AMessage: String; ALine, AColumn: Integer);
 begin
-  raise EYAMLException.Create(AMessage, ALine, AColumn);
+  raise EYAMLException.Create(AMessage, ALine + FLineOffset, AColumn);
 end;
 
 function TYAMLBlockParser.ExtractNodeProperties(var AValue: String; out AAnchor, AAlias: String): Boolean;
@@ -3087,7 +2092,7 @@ begin
   begin
     if CharInSet(AValue[1], ['&', '*', '!']) then
     begin
-      if FConfigurationProfile then
+      if NOT YAMLProfileAllows(FConfigurationProfile, yrfAnchors) then
         Error('Configuration does not allow anchors, aliases, or tags', CurrentLineNo, 1);
       P:=Pos(YAML_CHARS[ycSpace], AValue);
       if P = 0 then
@@ -3422,7 +2427,8 @@ var
   Segment: TStringList;
   Parser: TYAMLBlockParser;
   S, Marker, PendingHeader: String;
-  HasSegmentContent, SawMarker, HadYamlDirective, HadTagDirective: Boolean;
+  HasSegmentContent, SawMarker, HadYamlDirective, HadTagDirective, AtColumnZero: Boolean;
+  SegmentStartLine: Integer;
 
   function HasTagShorthand(const AValue: String): Boolean;
   var
@@ -3480,7 +2486,7 @@ var
 
   procedure AddSegment(AForce: Boolean);
   begin
-    if (NOT AForce) AND (NOT HasSegmentContent) AND (PendingHeader = '') then
+    if (NOT AForce) AND (NOT SawMarker) AND (NOT HasSegmentContent) AND (PendingHeader = '') then
     begin
       Segment.Clear;
       Exit;
@@ -3496,7 +2502,7 @@ var
     if FConfigurationProfile AND (ADocuments.Count > 0) then
       Error('Configuration requires one document', CurrentLineNo, 1);
 
-    Parser:=TYAMLBlockParser.Create(Segment.Text, FConfigurationProfile);
+    Parser:=TYAMLBlockParser.Create(Segment.Text, FConfigurationProfile, FMaxDepth, FBudget.MaxNodes, SegmentStartLine);
     try
       ADocuments.Add(Parser.Parse);
     finally
@@ -3518,18 +2524,21 @@ begin
     HadYamlDirective:=False;
     HadTagDirective:=False;
     PendingHeader:='';
+    SegmentStartLine:=1;
 
     for I:=0 to FLines.Count - 1 do
     begin
       S:=FLines[I];
       Marker:=Trim(RemoveComment(S));
+      AtColumnZero:=(S <> '') AND (NOT CharInSet(S[1], [YAML_CHARS[ycSpace], YAML_CHARS[ycTab]]));
 
-      if (Marker = YAML_DOCUMENT_START) OR ((Copy(Marker, 1, Length(YAML_DOCUMENT_START)) = YAML_DOCUMENT_START) AND ((Length(Marker) = Length(YAML_DOCUMENT_START)) OR IsYAMLChar(Marker[Length(YAML_DOCUMENT_START) + 1], [ycSpace, ycTab]))) then
+      if AtColumnZero AND ((Marker = YAML_DOCUMENT_START) OR ((Copy(Marker, 1, Length(YAML_DOCUMENT_START)) = YAML_DOCUMENT_START) AND ((Length(Marker) = Length(YAML_DOCUMENT_START)) OR IsYAMLChar(Marker[Length(YAML_DOCUMENT_START) + 1], [ycSpace, ycTab])))) then
       begin
         AddSegment(False);
         SawMarker:=True;
         if Length(Marker) > 3 then
         begin
+          SegmentStartLine:=Integer(NativeInt(FLines.Objects[I]));
           S:=Copy(S, Pos(YAML_DOCUMENT_START, S) + Length(YAML_DOCUMENT_START), MaxInt);
           PendingHeader:=Trim(S);
           if (PendingHeader <> '') AND (PendingHeader[1] = '&') AND (FindValueColon(PendingHeader) > 0) then
@@ -3541,9 +2550,9 @@ begin
         Continue;
       end;
 
-      if (Marker <> '') AND (CharToYAML(Marker[1]) = ycPercent) then
+      if AtColumnZero AND (Marker <> '') AND (CharToYAML(Marker[1]) = ycPercent) then
       begin
-        if FConfigurationProfile then
+        if NOT YAMLProfileAllows(FConfigurationProfile, yrfDirectives) then
           Error('Configuration does not allow directives', Integer(NativeInt(FLines.Objects[I])), 1);
         if (NOT HasSegmentContent) AND (NOT SawMarker) AND (PendingHeader = '') then
         begin
@@ -3556,7 +2565,7 @@ begin
           Error(RCS_UNEXPECTED_DIRECTIVE, Integer(NativeInt(FLines.Objects[I])), 1);
       end;
 
-      if Marker = YAML_DOCUMENT_END then
+      if AtColumnZero AND (Marker = YAML_DOCUMENT_END) then
       begin
         if HadYamlDirective AND (NOT SawMarker) AND (NOT HasSegmentContent) AND (PendingHeader = '') then
           Error(RCS_DIRECTIVE_WITHOUT_DOCUMENT, Integer(NativeInt(FLines.Objects[I])), 1);
@@ -3565,7 +2574,7 @@ begin
         Continue;
       end;
 
-      if (Copy(Marker, 1, Length(YAML_DOCUMENT_END)) = YAML_DOCUMENT_END) AND ((Length(Marker) = Length(YAML_DOCUMENT_END)) OR IsYAMLChar(Marker[Length(YAML_DOCUMENT_END) + 1], [ycSpace, ycTab])) then
+      if AtColumnZero AND (Copy(Marker, 1, Length(YAML_DOCUMENT_END)) = YAML_DOCUMENT_END) AND ((Length(Marker) = Length(YAML_DOCUMENT_END)) OR IsYAMLChar(Marker[Length(YAML_DOCUMENT_END) + 1], [ycSpace, ycTab])) then
         Error(RCS_CONTENT_AFTER_DOCUMENT_END, Integer(NativeInt(FLines.Objects[I])), Length(YAML_DOCUMENT_END) + 1);
 
       if (NOT SawMarker) AND (NOT HasSegmentContent) AND (PendingHeader = '') AND (NOT HasContent(S)) then
@@ -3576,6 +2585,8 @@ begin
         Segment.Add(PendingHeader);
         PendingHeader:='';
       end;
+      if Segment.Count = 0 then
+        SegmentStartLine:=Integer(NativeInt(FLines.Objects[I]));
       Segment.Add(S);
       if HasContent(S) then
         HasSegmentContent:=True;
@@ -3589,9 +2600,38 @@ begin
   end;
 end;
 
+function TYAMLBlockParser.ParseCompactSequenceItem(const AValue: String;
+  ALineNo, AColumn: Integer): TYAMLValue;
+var
+  Nested: TYAMLArray;
+begin
+  if (Length(AValue) < 2) OR (CharToYAML(AValue[1]) <> ycDash) OR
+    NOT IsYAMLChar(AValue[2], [ycSpace, ycTab]) then
+    Exit(ParseInlineValue(AValue, ALineNo, AColumn));
+
+  if FConfigurationProfile AND (FDepth >= FMaxDepth) then
+    Error(Format('Configuration exceeds %d nesting levels', [FMaxDepth]), ALineNo, AColumn);
+  CountNode(ALineNo, AColumn);
+  Nested:=TYAMLArray.Create;
+  try
+    if FConfigurationProfile then
+      Inc(FDepth);
+    try
+      Nested.Add(ParseCompactSequenceItem(Trim(Copy(AValue, 3, MaxInt)), ALineNo, AColumn + 2));
+    finally
+      if FConfigurationProfile then
+        Dec(FDepth);
+    end;
+    Result:=Nested;
+  except
+    Nested.Free;
+    raise;
+  end;
+end;
+
 function TYAMLBlockParser.ParseArray(AIndent: Integer): TYAMLArray;
 var
-  Line, Rest, Key, ValueText, NodeAnchor, ValueAnchor, AliasName: String;
+  Line, Rest, Key, KeyError, ValueText, NodeAnchor, ValueAnchor, AliasName: String;
   Colon, DashColumn, LineNo, PairColon: Integer;
   Obj, PairObj: TYAMLObject;
   Arr: TYAMLArray;
@@ -3628,6 +2668,8 @@ begin
         Break;
       if CurrentIndent > AIndent then
         Error(RCS_INVALID_YAML, CurrentLineNo, CurrentIndent + 1);
+      if FConfigurationProfile AND (FDepth >= FMaxDepth) then
+        Error(Format('Configuration exceeds %d nesting levels', [FMaxDepth]), CurrentLineNo, CurrentIndent + 1);
 
       Line:=RemoveComment(CurrentLine);
       LineNo:=CurrentLineNo;
@@ -3662,6 +2704,8 @@ begin
 
       if Rest = ':' then
       begin
+        if FConfigurationProfile then
+          Error('Configuration mapping keys must be strings', LineNo, DashColumn + 1);
         CountNode(LineNo, DashColumn + 1);
         Obj:=TYAMLObject.Create;
         try
@@ -3677,7 +2721,7 @@ begin
       end
       else if (Length(Rest) >= 2) AND (CharToYAML(Rest[1]) = ycQuestion) and IsYAMLChar(Rest[2], [ycSpace, ycTab]) then
       begin
-        if FConfigurationProfile then
+        if NOT YAMLProfileAllows(FConfigurationProfile, yrfComplexKeys) then
           Error('Configuration does not allow complex keys', LineNo, DashColumn + 1);
         KeyValue:=ParseInlinePairOrValue(Trim(Copy(Rest, 3, MaxInt)), LineNo, DashColumn + 2);
         try
@@ -3729,9 +2773,21 @@ begin
         CountNode(LineNo, DashColumn + 1);
         Obj:=TYAMLObject.Create;
         try
+          if FConfigurationProfile then
+            Inc(FDepth);
+          try
+          if FConfigurationProfile AND (FDepth >= FMaxDepth) then
+            Error(Format('Configuration exceeds %d nesting levels', [FMaxDepth]), LineNo, DashColumn + 1);
+          CountNode(LineNo, DashColumn + 1);
           Key:=Trim(Copy(Rest, 1, Colon - 1));
           if Key <> '' then
             Key:=ParseKey(Key, LineNo);
+          if FConfigurationProfile then
+          begin
+            KeyError:=YAMLConfigurationKeyError(Obj, Key);
+            if KeyError <> '' then
+              Error(KeyError, LineNo, DashColumn + 1);
+          end;
           ValueText:=Trim(Copy(Rest, Colon + 1, MaxInt));
           ExtractNodeProperties(ValueText, ValueAnchor, AliasName);
           if AliasName <> '' then
@@ -3761,11 +2817,6 @@ begin
           StoreAnchor(ValueAnchor, Value);
           if Key = '<<' then
           begin
-            if FConfigurationProfile then
-            begin
-              Value.Free;
-              Error('Configuration does not allow merge keys', LineNo, DashColumn + 1);
-            end;
             ApplyMerge(Obj, Value);
             Value.Free;
           end
@@ -3775,6 +2826,10 @@ begin
           ParseObjectInto(Obj, AIndent + 2);
           StoreAnchor(NodeAnchor, Obj);
           Result.Add(Obj);
+          finally
+            if FConfigurationProfile then
+              Dec(FDepth);
+          end;
         except
           Obj.Free;
           raise;
@@ -3787,17 +2842,26 @@ begin
           CountNode(LineNo, DashColumn + 1);
           Arr:=TYAMLArray.Create;
           try
-            Arr.Add(ParseInlineValue(Trim(Copy(Rest, 3, MaxInt)), LineNo, DashColumn + 2));
+            if FConfigurationProfile then
+              Inc(FDepth);
+            try
+            if FConfigurationProfile AND (FDepth >= FMaxDepth) then
+              Error(Format('Configuration exceeds %d nesting levels', [FMaxDepth]), LineNo, DashColumn + 1);
+            Arr.Add(ParseCompactSequenceItem(Trim(Copy(Rest, 3, MaxInt)), LineNo, DashColumn + 2));
             Inc(FIndex);
             while (NOT Eof) AND IsSequenceLine(AIndent + 2) do
             begin
               Line:=Trim(Copy(RemoveComment(CurrentLine), AIndent + 4, MaxInt));
-              Arr.Add(ParseInlineValue(Line, CurrentLineNo, AIndent + 3));
+              Arr.Add(ParseCompactSequenceItem(Line, CurrentLineNo, AIndent + 3));
               Inc(FIndex);
             end;
             Value:=Arr;
             StoreAnchor(NodeAnchor, Value);
             Result.Add(Value);
+            finally
+              if FConfigurationProfile then
+                Dec(FDepth);
+            end;
           except
             Arr.Free;
             raise;
@@ -4004,25 +3068,16 @@ begin
     Exit;
   end;
 
-  Parser:=TYAMLParser.Create(V, False, FConfigurationProfile, 32 - FDepth, 10000 - FNodes);
+  Parser:=TYAMLParser.Create(V, False, FConfigurationProfile, FMaxDepth - FDepth,
+    FBudget.MaxNodes, FBudget);
   try
     try
       Result:=Parser.Parse;
     except
       on ParseError: EYAMLException do
       begin
-        if FConfigurationProfile then
-          raise EYAMLException.Create(ParseError.Message, ALineNo + ParseError.Line - 1, AColumn + ParseError.Column - 1);
-        raise;
-      end;
-    end;
-    if FConfigurationProfile then
-    begin
-      Inc(FNodes, Parser.ParsedNodes);
-      if FNodes > 10000 then
-      begin
-        Result.Free;
-        Error('Configuration exceeds 10000 nodes', ALineNo, AColumn);
+        raise EYAMLException.Create(ParseError.Reason,
+          ALineNo + ParseError.Line - 1 + FLineOffset, AColumn + ParseError.Column - 1);
       end;
     end;
     StoreAnchor(Anchor, Result);
@@ -4039,13 +3094,9 @@ begin
   if AKey = '' then
     Error(RCS_EXPECTED_KEY, ALineNo, 1);
 
-  if FConfigurationProfile AND CharInSet(AKey[1], ['*', '&', '!', '?', '[', '{']) then
+  if NOT YAMLProfileAllows(FConfigurationProfile, yrfComplexKeys) AND
+    CharInSet(AKey[1], ['*', '&', '!', '?', '[', '{']) then
     Error('Configuration mapping keys must be strings', ALineNo, 1);
-  if FConfigurationProfile AND NOT CharInSet(AKey[1], ['"', '''']) then
-    if (AKey = 'null') OR (AKey = 'true') OR (AKey = 'false') OR CharInSet(AKey[1], ['0'..'9']) OR
-      ((AKey[1] = '-') AND (Length(AKey) > 1) AND CharInSet(AKey[2], ['0'..'9'])) then
-      Error('Configuration mapping keys must be strings', ALineNo, 1);
-
   if AKey[1] = '*' then
   begin
     Value:=AliasValue(Copy(AKey, 2, MaxInt), ALineNo, 1);
@@ -4055,12 +3106,14 @@ begin
       Value.Free;
     end;
   end
-  else if CharInSet(AKey[1], ['"', '''']) then
+  else if FConfigurationProfile OR CharInSet(AKey[1], ['"', '''']) then
   begin
-    Parser:=TYAMLParser.Create(AKey, False);
+    Parser:=TYAMLParser.Create(AKey, False, FConfigurationProfile, 1, 1);
     try
-      Value:=Parser.ParseValue;
+      Value:=Parser.Parse;
       try
+        if FConfigurationProfile AND NOT Value.IsString then
+          Error('Configuration mapping keys must be strings', ALineNo, 1);
         Result:=Value.AsString;
       finally
         Value.Free;
@@ -4082,8 +3135,8 @@ begin
   if FConfigurationProfile then
   begin
     Inc(FDepth);
-    if FDepth > 32 then
-      Error('Configuration exceeds 32 nesting levels', CurrentLineNo, CurrentIndent + 1);
+    if FDepth > FMaxDepth then
+      Error(Format('Configuration exceeds %d nesting levels', [FMaxDepth]), CurrentLineNo, CurrentIndent + 1);
   end;
   try
   SkipIgnorable;
@@ -4151,7 +3204,14 @@ begin
     if QuoteBalance(Line) = #0 then
       Line:=CollectPlainScalar(Line, AIndent, AllowContinuation);
     Line:=CollectFlowValue(Line);
-    Result:=ParseInlineValue(Line, LineNo, AIndent + 1);
+    if FConfigurationProfile then
+      Dec(FDepth);
+    try
+      Result:=ParseInlineValue(Line, LineNo, AIndent + 1);
+    finally
+      if FConfigurationProfile then
+        Inc(FDepth);
+    end;
     if (NOT Eof) AND ((Trim(RemoveComment(CurrentLine)) = '}') OR (Trim(RemoveComment(CurrentLine)) = ']')) then
       Inc(FIndex);
   end;
@@ -4175,7 +3235,7 @@ end;
 
 procedure TYAMLBlockParser.ParseObjectInto(AObject: TYAMLObject; AIndent: Integer);
 var
-  Line, Key, KeyText, KeyAnchor, KeyAlias, ValueText, Anchor, AliasName, ItemText: String;
+  Line, Key, KeyError, KeyText, KeyAnchor, KeyAlias, ValueText, Anchor, AliasName, ItemText: String;
   Colon, LineNo, InnerIndent, PairColon: Integer;
   Value, KeyValue, PairKeyValue: TYAMLValue;
   Arr, InnerArr: TYAMLArray;
@@ -4196,6 +3256,8 @@ begin
       Break;
     if CurrentIndent > AIndent then
       Error(RCS_INVALID_YAML, CurrentLineNo, CurrentIndent + 1);
+    if FConfigurationProfile AND (FDepth >= FMaxDepth) then
+      Error(Format('Configuration exceeds %d nesting levels', [FMaxDepth]), CurrentLineNo, CurrentIndent + 1);
 
     LineNo:=CurrentLineNo;
     Line:=RemoveComment(CurrentLine);
@@ -4205,7 +3267,7 @@ begin
 
     if (Trim(Line) = '?') OR ((Trim(Line) <> '') AND (Trim(Line)[1] = '?') AND ((Length(Trim(Line)) = 1) OR IsYAMLChar(Trim(Line)[2], [ycSpace, ycTab]))) then
     begin
-      if FConfigurationProfile then
+      if NOT YAMLProfileAllows(FConfigurationProfile, yrfComplexKeys) then
         Error('Configuration does not allow complex keys', LineNo, AIndent + 1);
       if (Length(Trim(Line)) > 1) AND (Trim(Line)[2] = #9) then
         Error(RCS_INVALID_YAML, LineNo, AIndent + 2);
@@ -4298,10 +3360,15 @@ begin
           end
           else if (Length(ValueText) >= 2) AND (CharToYAML(ValueText[1]) = ycDash) and IsYAMLChar(ValueText[2], [ycSpace, ycTab]) then
           begin
+            if FConfigurationProfile AND (FDepth >= FMaxDepth) then
+              Error(Format('Configuration exceeds %d nesting levels', [FMaxDepth]), LineNo, AIndent + 2);
             CountNode(LineNo, AIndent + 2);
             Arr:=TYAMLArray.Create;
             try
-              Arr.Add(ParseInlineValue(Trim(Copy(ValueText, 3, MaxInt)), LineNo, AIndent + 3));
+              if FConfigurationProfile then
+                Inc(FDepth);
+              try
+              Arr.Add(ParseCompactSequenceItem(Trim(Copy(ValueText, 3, MaxInt)), LineNo, AIndent + 3));
               while (NOT Eof) AND IsSequenceLine(AIndent + 2) do
               begin
                 ItemText:=Copy(RemoveComment(CurrentLine), AIndent + 4, MaxInt);
@@ -4311,16 +3378,25 @@ begin
                   InnerIndent:=AIndent + 3;
                   while (InnerIndent - AIndent - 2 <= Length(ItemText)) AND (ItemText[InnerIndent - AIndent - 2] = YAML_CHARS[ycSpace]) do
                     Inc(InnerIndent);
+                  if FConfigurationProfile AND (FDepth >= FMaxDepth) then
+                    Error(Format('Configuration exceeds %d nesting levels', [FMaxDepth]), CurrentLineNo, InnerIndent + 1);
+                  CountNode(CurrentLineNo, InnerIndent + 1);
                   InnerArr:=TYAMLArray.Create;
                   try
-                    CountNode(CurrentLineNo, InnerIndent + 1);
-                    InnerArr.Add(ParseInlineValue(Trim(Copy(Line, 3, MaxInt)), CurrentLineNo, InnerIndent + 2));
+                    if FConfigurationProfile then
+                      Inc(FDepth);
+                    try
+                    InnerArr.Add(ParseCompactSequenceItem(Trim(Copy(Line, 3, MaxInt)), CurrentLineNo, InnerIndent + 2));
                     Inc(FIndex);
                     while (NOT Eof) AND IsSequenceLine(InnerIndent) do
                     begin
                       Line:=Trim(Copy(RemoveComment(CurrentLine), InnerIndent + 2, MaxInt));
                       Inc(FIndex);
-                      InnerArr.Add(ParseInlineValue(Line, CurrentLineNo, InnerIndent + 2));
+                      InnerArr.Add(ParseCompactSequenceItem(Line, CurrentLineNo, InnerIndent + 2));
+                    end;
+                    finally
+                      if FConfigurationProfile then
+                        Dec(FDepth);
                     end;
                     Arr.Add(InnerArr);
                     InnerArr:=nil;
@@ -4331,10 +3407,14 @@ begin
                 else
                 begin
                   Inc(FIndex);
-                  Arr.Add(ParseInlineValue(Line, CurrentLineNo, AIndent + 3));
+                  Arr.Add(ParseCompactSequenceItem(Line, CurrentLineNo, AIndent + 3));
                 end;
               end;
               Value:=Arr;
+              finally
+                if FConfigurationProfile then
+                  Dec(FDepth);
+              end;
             except
               Arr.Free;
               raise;
@@ -4381,10 +3461,17 @@ begin
     if KeyAlias <> '' then
       KeyText:='*' + KeyAlias;
 
+    CountNode(LineNo, AIndent + 1);
     if KeyText = '' then
       Key:=''
     else
       Key:=ParseKey(KeyText, LineNo);
+    if FConfigurationProfile then
+    begin
+      KeyError:=YAMLConfigurationKeyError(AObject, Key);
+      if KeyError <> '' then
+        Error(KeyError, LineNo, AIndent + 1);
+    end;
 
     if KeyAnchor <> '' then
     begin
@@ -4452,23 +3539,11 @@ begin
     StoreAnchor(Anchor, Value);
     if Key = '<<' then
     begin
-      if FConfigurationProfile then
-      begin
-        Value.Free;
-        Error('Configuration does not allow merge keys', LineNo, AIndent + 1);
-      end;
       ApplyMerge(AObject, Value);
       Value.Free;
     end
     else
-    begin
-      if FConfigurationProfile AND AObject.HasKey(Key) then
-      begin
-        Value.Free;
-        Error(Format(RCS_DUPLICATE_KEY, [Key]), LineNo, AIndent + 1);
-      end;
       AObject.SetOrAdd(Key, Value);
-    end;
   end;
 end;
 
@@ -4531,9 +3606,10 @@ begin
     S:=Trim(RemoveComment(CurrentLine));
     if S = '' then
       Inc(FIndex)
-    else if (CharToYAML(S[1]) = ycPercent) OR (S = YAML_DOCUMENT_START) then
+    else if (CurrentLine <> '') AND (CurrentLine[1] = S[1]) AND
+      ((CharToYAML(S[1]) = ycPercent) OR (S = YAML_DOCUMENT_START)) then
       Inc(FIndex)
-    else if S = YAML_DOCUMENT_END then
+    else if (CurrentLine <> '') AND (CurrentLine[1] = S[1]) AND (S = YAML_DOCUMENT_END) then
     begin
       Inc(FIndex);
       Break;

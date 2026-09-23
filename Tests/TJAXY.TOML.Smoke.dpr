@@ -111,6 +111,10 @@ end;
 
 procedure TestFailures;
 begin
+  ExpectFails('a. = 1', 'trailing dotted key component rejected');
+  ExpectFails('a b = 1', 'space inside bare key rejected');
+  ExpectFails('a..b = 1', 'empty dotted key component rejected');
+  ExpectFails('a.#b = 1', 'missing dotted key component before comment rejected');
   ExpectFails('name = "one"' + sLineBreak + 'name = "two"', 'duplicate root key rejected');
   ExpectFails('name = "one" "two"', 'trailing string content rejected');
   ExpectFails('values = [1] nope', 'trailing array content rejected');
@@ -122,6 +126,63 @@ begin
   ExpectFails('database = "db.local"' + sLineBreak + '[database]', 'scalar cannot become table');
   ExpectFails('values = [1,,2]', 'empty array item rejected');
   ExpectFails('metadata = { license = "BSD-2-Clause", , owner = "TJAXY" }', 'empty inline table pair rejected');
+end;
+
+procedure TestNestedArrayTables;
+var
+  TOML: TTOML;
+begin
+  TOML:=TTOML.FromString(
+    '[[products]]' + sLineBreak +
+    'name = "a"' + sLineBreak +
+    '[products.details]' + sLineBreak +
+    'color = "red"' + sLineBreak +
+    '[[products]]' + sLineBreak +
+    'name = "b"' + sLineBreak +
+    '[products.details]' + sLineBreak +
+    'color = "blue"');
+  try
+    Expect(TOML.AsObject['products'].AsArray.Count = 2, 'nested array table retains two products');
+    Expect(TOML.AsObject['products'].AsArray[0].AsObject['details'].AsObject['color'].AsString = 'red',
+      'first array table detail retained');
+    Expect(TOML.AsObject['products'].AsArray[1].AsObject['details'].AsObject['color'].AsString = 'blue',
+      'second array table detail retained');
+  finally
+    TOML.Free;
+  end;
+  TOML:=TTOML.FromString(
+    '"" = 1' + sLineBreak +
+    '"spaced key".child = 2' + sLineBreak +
+    '[parent.child]' + sLineBreak +
+    'value = 3' + sLineBreak +
+    '[parent]' + sLineBreak +
+    'other = 4');
+  try
+    Expect(TOML.AsObject[''].AsInteger = 1, 'quoted empty TOML key is valid');
+    Expect(TOML.AsObject['spaced key'].AsObject['child'].AsInteger = 2,
+      'quoted dotted TOML key is valid');
+    Expect(TOML.AsObject['parent'].AsObject['child'].AsObject['value'].AsInteger = 3,
+      'implicit TOML parent keeps child table');
+    Expect(TOML.AsObject['parent'].AsObject['other'].AsInteger = 4,
+      'implicit TOML parent can be defined later');
+  finally
+    TOML.Free;
+  end;
+  TOML:=TTOML.FromString(
+    '[[products]]' + sLineBreak +
+    '[[products.variants]]' + sLineBreak +
+    'name = "small"' + sLineBreak +
+    '[[products]]' + sLineBreak +
+    '[[products.variants]]' + sLineBreak +
+    'name = "large"');
+  try
+    Expect(TOML.AsObject['products'].AsArray[0].AsObject['variants'].AsArray[0].AsObject['name'].AsString = 'small',
+      'first nested array of tables stays under first product');
+    Expect(TOML.AsObject['products'].AsArray[1].AsObject['variants'].AsArray[0].AsObject['name'].AsString = 'large',
+      'second nested array of tables stays under second product');
+  finally
+    TOML.Free;
+  end;
 end;
 
 procedure TestWrite;
@@ -177,6 +238,7 @@ begin
     TestWrite;
     TestParserReference;
     TestFailures;
+    TestNestedArrayTables;
   except
     on E: Exception do
     begin

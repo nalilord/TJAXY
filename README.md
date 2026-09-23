@@ -49,6 +49,17 @@ explicit schema string.
 | XML | `TJAXY.XML` | elements, attributes via `@`, text via `#text`, repeated elements as arrays, namespace preserve/strip modes, CDATA/entity decoding, internal DOCTYPE declaration skipping, self-contained reader/writer | processing instructions round-trip, DTD validation/entity expansion |
 | YAML | `TJAXY.YAML` | KYAML flow mode, YAML block mode, anchors/aliases/merge keys, multi-document read/write | full YAML 1.2 compliance suite parity |
 
+Delphi 37.0 Win32 and Win64 are the tested full-feature targets. FPC 3.2.2 on
+Linux x86-64 is currently tested for Core, JSON, and YAML configuration input.
+Its default mapper has no RTTI mapping capability and raises an explicit error;
+the FPC smoke test also exercises a registered object-only mapper.
+The other codecs have not been validated on FPC.
+Byte-oriented text input is strict UTF-8, accepts one leading BOM, and rejects
+malformed sequences and NUL. Text output is BOM-free UTF-8. Delphi `String`
+overloads take Unicode text and reject unpaired UTF-16 surrogates when writing.
+On the declared FPC Linux target, `String` overloads require UTF-8 text in the
+process code page; stream/file overloads validate UTF-8 bytes explicitly.
+
 ## Common Parser Use
 
 Applications can accept a `TTJAXYParser` and keep format-specific code at the
@@ -149,6 +160,101 @@ Rules.EnumStripPrefixes := ['ts'];
 TTJAXYDocument.SerializerRules := Rules;
 ```
 
+When deserializing a nested class into a nil reference, register a factory for
+the declared class first with `TTJAXYDocument.RegisterObjectFactory`. Existing
+non-nil objects are updated in place. A `null` value clears a class reference;
+the mapper does not free the old application-owned object. Assignment stops at
+the first conversion or setter error and earlier successful member writes
+remain. Use `UnregisterObjectFactory` when the registration is no longer needed.
+If a class setter raises, the mapper reads the property back: it frees a newly
+created factory object when the setter did not store it and leaves a stored
+object with the target. A setter whose getter also raises must manage that
+uncertain ownership itself.
+
+Sets of at most eight bytes retain the legacy numeric representation. Larger
+sets use arrays of enum names so high bits can be round-tripped. For a policy
+specific to one operation, call `JSON.LoadFromObject(Config, Rules)` or
+`JSON.AssignToObject(TargetConfig, Rules)`. These calls snapshot the rules and
+serialize concurrent mapper operations internally. The global
+`SerializerRules` property remains the compatibility default. Records use
+`TJSON.CreateFromRecordWithRules<T>(Value, Rules)` and
+`JSON.AssignToRecord<T>(Target, Rules)` for the same override.
+Arrays of class references are rejected during deserialization because Delphi
+managed arrays do not own their referenced objects; callers can map those
+members with an application mapper that defines construction and cleanup.
+Fixed arrays reject excess input elements instead of truncating them.
+
+`TTJAXYDocument.MapperCapabilities` reports whether the active mapper supports
+objects, records, and factory registration. Delphi uses the RTTI mapper in
+`TJAXY.Mapper.Delphi.inc`; its compiler-specific types stay inside the Core
+implementation. FPC starts without a reflection mapper and raises for object
+or record mapping until an application assigns an `ITJAXYObjectMapper` to
+`TTJAXYDocument.Mapper`. A registered mapper can support a narrower set of
+classes and reports that through `Capabilities`; unsupported operations must
+raise. The FPC smoke test contains a complete object-only registration example.
+The mapper interface takes ownership of nodes returned by `SerializeObject`
+and `SerializeRecord`; `AssignObject` and `AssignRecord` borrow their source
+nodes and target instances. Register a mapper before starting concurrent
+mapping work, and do not replace it during an operation.
+
+The default Delphi mapper accepts integer fields from integral numbers or
+decimal strings and rejects overflow or fractions. Float fields accept numbers
+or invariant-decimal strings; `Single`, `Comp`, and `Currency` reject range or
+precision loss. Boolean fields accept booleans, integer zero/nonzero, or
+`true`/`false` strings. Enum fields use the configured name/ordinal rules;
+unknown values raise, choose the first value, or leave the member unchanged
+according to `EnumUnknownRead`. In ignore mode, `AssignToObject` and
+`AssignToRecord` overloads with an `out Diagnostics` array report ignored values
+as `TTJAXYMappingDiagnostic` entries with member paths. String fields accept
+scalar values; character fields require exactly one representable code unit.
+Variants serialize as strings (or null) and deserialize from scalar or null
+values. Unsupported RTTI kinds raise with a member path.
+
+## YAML configuration profile
+
+Use the configuration factories when loading untrusted configuration documents:
+
+```pascal
+var
+  Options: TYAMLConfigurationOptions;
+  Config: TYAML;
+begin
+  Options := TYAML.DefaultConfigurationOptions;
+  Options.MaxInputBytes := 512 * 1024;
+  Config := TYAML.FromConfigurationFile('settings.yaml', Options);
+  try
+    Writeln(Config.AsObject['name'].AsString);
+  finally
+    Config.Free;
+  end;
+end;
+```
+
+`FromConfigurationString` and `FromConfigurationStream` accept the same options;
+the stream factory reads from the current position and supports non-seekable
+streams. Convenience overloads use `MaxInputBytes = 256 * 1024`, `MaxDepth =
+32`, and `MaxNodes = 10000`. The old literal `262144` is exactly 256 KiB: it
+limits **raw input bytes**, including whitespace, comments, and any leading
+UTF-8 BOM. It does not cap the number of Unicode characters or peak memory.
+Limits must be positive; there is no unlimited profile setting. Ordinary
+`TYAML.FromString` and `TYAML.FromFile` do not enable this profile.
+The root is at depth 1. Each mapping key and value and each sequence element
+is a child one level deeper. Keys, scalars, containers, and implicit nulls each
+count as one node. `MaxInputBytes` must be less than `MaxInt` so the loader can
+read one additional byte to detect overflow.
+
+The profile accepts UTF-8 with one optional leading BOM and writes BOM-free
+UTF-8. It rejects malformed UTF-8, NUL, multiple documents, duplicate keys,
+complex keys, merge keys, anchors, aliases, tags, and directives. The profile
+bounds input bytes and the parser's counted nodes and depth; it is not a peak
+memory guarantee.
+
+YAML nodes now use the Core DOM directly. `TYAMLValue`, `TYAMLObject`, and
+related names are aliases for their `TTJAXY*` counterparts; both typed `TYAML`
+and generic `TTJAXYParser` references observe the same edits. Code that
+relied on the old distinct YAML class hierarchy or its exact exception types
+may need updating.
+
 ## XML Mapping
 
 XML maps into the shared object model with these reserved keys:
@@ -246,7 +352,12 @@ Use `WriteToBinaryBytes` / `LoadFromBinaryBytes` for raw Avro binary payloads,
 `WriteSingleObjectBytes` / `LoadSingleObjectBytes` for single-object encoding,
 and `SaveContainerToStream` / `LoadContainerFromStream` for object container
 files. Set `ContainerCodec := 'deflate'` for deflated containers; the default is
-`'null'`.
+`'null'`. Deflate containers now use raw RFC 1951 streams as Avro requires.
+Older TJAXY files written with a zlib wrapper are not accepted by the strict
+reader and should be regenerated or converted before upgrading.
+Container readers limit the total number of records to 1,000,000 by default,
+including records whose schema consumes zero bytes. Set
+`MaxContainerRecords` on the reader before loading to choose a lower limit.
 
 ## TOML
 

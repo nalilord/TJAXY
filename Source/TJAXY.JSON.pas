@@ -15,7 +15,7 @@ unit TJAXY.JSON;
 interface
 
 uses
-  SysUtils, Classes, Math, System.Rtti, TJAXY.Core;
+  SysUtils, Classes, Math, TJAXY.Core;
 
 type
   TJSONExtension = (jeDefault, jeJSON5);
@@ -47,6 +47,7 @@ type
     class function CreateObjectRoot: TJSON; reintroduce; static;
     constructor CreateFromObject(AObject: TObject); override;
     class function CreateFromRecord<T>(const ARecord: T): TJSON; static;
+    class function CreateFromRecordWithRules<T>(const ARecord: T; const ARules: TTJAXYSerializerRules): TJSON; static;
     constructor CreateFromString(AJSON: String; AExtension: TJSONExtension = jeDefault);
     class function CreateFromFile(AFile: String; AExtension: TJSONExtension = jeDefault): TJSON; static;
     constructor CreateFromStream(AStream: TStream; AExtension: TJSONExtension = jeDefault);
@@ -123,11 +124,7 @@ end;
 
 function JSONFormatSettings: TFormatSettings;
 begin
-  {$IFDEF FPC}
-  Result:=DefaultFormatSettings;
-  {$ELSE}
-  Result:=TFormatSettings.Create('en-US');
-  {$ENDIF}
+  Result:=FormatSettings;
   Result.DecimalSeparator:='.';
   Result.ThousandSeparator:=',';
 end;
@@ -411,11 +408,14 @@ function TJSONParser.ReadNumber: TTJAXYValue;
 var
   S: String;
   I: Int64;
+  U: UInt64;
   F: Extended;
   IsFloat: Boolean;
+  Negative: Boolean;
 begin
   S:='';
   IsFloat:=False;
+  Negative:=False;
 
   if Current = '+' then
   begin
@@ -425,6 +425,7 @@ begin
   end else
   if Current = '-' then
   begin
+    Negative:=True;
     S:=S + Current;
     Advance;
   end;
@@ -452,25 +453,87 @@ begin
       S:=S + Current;
       Advance;
     end;
-    if NOT TryStrToInt64(S, I) then
+    if NOT TryStrToUInt64(S, U) then
       Error(RCS_INVALID_NUMBER);
+    if Negative then
+    begin
+      if U > UInt64(High(Int64)) + 1 then
+        Error(RCS_INVALID_NUMBER);
+      if U = UInt64(High(Int64)) + 1 then
+        I:=Low(Int64)
+      else
+        I:=-Int64(U);
+    end
+    else
+    begin
+      if U > UInt64(High(Int64)) then
+        Error(RCS_INVALID_NUMBER);
+      I:=Int64(U);
+    end;
     Result:=TTJAXYInteger.CreateFrom(I);
     Exit;
   end;
 
-  while NOT Eof AND CharInSet(Current, ['0'..'9', '.', 'e', 'E', '+', '-']) do
+  if Current = '.' then
   begin
-    if CharInSet(Current, ['.', 'e', 'E']) then
-      IsFloat:=True;
+    RequireJSON5('leading decimal point');
+    IsFloat:=True;
+    S:=S + '0';
+  end
+  else if Current = '0' then
+  begin
     S:=S + Current;
     Advance;
-
-    if (Length(S) > 1) AND CharInSet(S[Length(S)], ['+', '-']) AND NOT CharInSet(S[Length(S) - 1], ['e', 'E']) then
-      Break;
+    if CharInSet(Current, ['0'..'9']) then
+      Error(RCS_INVALID_NUMBER);
+  end
+  else
+  begin
+    if NOT CharInSet(Current, ['1'..'9']) then
+      Error(RCS_INVALID_NUMBER);
+    while CharInSet(Current, ['0'..'9']) do
+    begin
+      S:=S + Current;
+      Advance;
+    end;
   end;
 
-  if (S = '') OR (S = '+') OR (S = '-') OR (S = '.') then
-    Error(RCS_INVALID_NUMBER);
+  if Current = '.' then
+  begin
+    IsFloat:=True;
+    S:=S + Current;
+    Advance;
+    if NOT CharInSet(Current, ['0'..'9']) then
+    begin
+      RequireJSON5('trailing decimal point');
+      S:=S + '0';
+    end
+    else
+      while CharInSet(Current, ['0'..'9']) do
+      begin
+        S:=S + Current;
+        Advance;
+      end;
+  end;
+
+  if CharInSet(Current, ['e', 'E']) then
+  begin
+    IsFloat:=True;
+    S:=S + Current;
+    Advance;
+    if CharInSet(Current, ['+', '-']) then
+    begin
+      S:=S + Current;
+      Advance;
+    end;
+    if NOT CharInSet(Current, ['0'..'9']) then
+      Error(RCS_INVALID_NUMBER);
+    while CharInSet(Current, ['0'..'9']) do
+    begin
+      S:=S + Current;
+      Advance;
+    end;
+  end;
 
   if IsFloat then
   begin
@@ -562,6 +625,8 @@ begin
         Advance;
       end;
     else
+      if Ord(Current) < 32 then
+        Error(RCS_INVALID_CHARACTER);
       if Current = AQuote then
       begin
         Advance;
@@ -687,21 +752,39 @@ begin
 end;
 
 class function TJSON.CreateFromRecord<T>(const ARecord: T): TJSON;
-{$IFNDEF FPC}
 var
-  Context: TRttiContext;
-  RecordValue: TValue;
-{$ENDIF}
+  Doc: TTJAXY;
 begin
-  Result:=TJSON.CreateObjectRoot;
-{$IFNDEF FPC}
-  RecordValue:=TValue.From<T>(ARecord);
-  if NOT RecordValue.IsEmpty then
-  begin
-    Context:=TRttiContext.Create;
-    Result.SetRoot(RTTIRecordToTJAXY(Context, RecordValue));
+  Doc:=TTJAXY.CreateFromRecord<T>(ARecord);
+  try
+    Result:=TJSON.CreateObjectRoot;
+    try
+      Result.Assign(Doc);
+    except
+      Result.Free;
+      raise;
+    end;
+  finally
+    Doc.Free;
   end;
-{$ENDIF}
+end;
+
+class function TJSON.CreateFromRecordWithRules<T>(const ARecord: T; const ARules: TTJAXYSerializerRules): TJSON;
+var
+  Doc: TTJAXY;
+begin
+  Doc:=TTJAXY.CreateFromRecordWithRules<T>(ARecord, ARules);
+  try
+    Result:=TJSON.CreateObjectRoot;
+    try
+      Result.Assign(Doc);
+    except
+      Result.Free;
+      raise;
+    end;
+  finally
+    Doc.Free;
+  end;
 end;
 
 class function TJSON.CreateFromFile(AFile: String; AExtension: TJSONExtension): TJSON;
@@ -756,16 +839,14 @@ end;
 
 procedure TJSON.LoadFromStream(AStream: TStream);
 begin
-  FData.Clear;
-  FData.CopyFrom(AStream, 0);
-  FData.Position:=0;
-  ReadFromString(FData.DataString);
+  ReadFromString(TJAXYReadUTF8(AStream));
 end;
 
 procedure TJSON.ReadFromString(const AValue: String);
 var
   Parser: TJSONParser;
 begin
+  TJAXYRequireValidText(AValue);
   FData.Clear;
   FData.WriteString(AValue);
   FData.Position:=0;
@@ -784,30 +865,18 @@ begin
 end;
 
 procedure TJSON.SaveToStream(AStream: TStream);
-var
-  S: String;
-  OutStream: TStringStream;
 begin
-  S:=WriteToString(tjaxywmReadable);
-  OutStream:=TStringStream.Create('', TEncoding.UTF8);
-  try
-    OutStream.WriteString(S);
-    OutStream.Position:=0;
-    OutStream.SaveToStream(AStream);
-  finally
-    OutStream.Free;
-  end;
+  TJAXYWriteUTF8(AStream, WriteToString(tjaxywmReadable));
 end;
 
 function TJSON.WriteToFile(const AFileName: String; AWriteMode: TTJAXYStringWriteMode): String;
 var
-  Stream: TStringStream;
+  Stream: TFileStream;
 begin
   Result:=WriteToString(AWriteMode);
-  Stream:=TStringStream.Create('', TEncoding.UTF8);
+  Stream:=TFileStream.Create(AFileName, fmCreate);
   try
-    Stream.WriteString(Result);
-    Stream.SaveToFile(AFileName);
+    TJAXYWriteUTF8(Stream, Result);
   finally
     Stream.Free;
   end;

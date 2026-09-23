@@ -679,6 +679,7 @@ end;
 
 function TTJAXYXMLParser.ParseElement(out AName: String): TTJAXYValue;
 var
+  QualifiedName: String;
   Obj: TTJAXYObject;
   Attrs: TTJAXYObject;
   AttrName: String;
@@ -696,7 +697,8 @@ begin
     raise EXMLException.Create(SXMLCDataOutsideElement);
   if StartsWithText(Copy(XML_MARKER_DOCTYPE_OPEN, 2, MaxInt)) then
     raise EXMLException.Create(SXMLDoctypeLocation);
-  AName:=NormalizeName(ReadName);
+  QualifiedName:=ReadName;
+  AName:=NormalizeName(QualifiedName);
 
   Obj:=TTJAXYObject.Create;
   HasAttributes:=False;
@@ -748,8 +750,8 @@ begin
       if StartsWith(XML_MARKER_END_TAG_OPEN) then
       begin
         Inc(FIndex, Length(XML_MARKER_END_TAG_OPEN));
-        if NormalizeName(ReadName) <> AName then
-          raise EXMLException.CreateFmt(SXMLUnexpectedClosingTag, [AName]);
+        if ReadName <> QualifiedName then
+          raise EXMLException.CreateFmt(SXMLUnexpectedClosingTag, [QualifiedName]);
         SkipWhitespace;
         Expect(XML_TAG_CLOSE);
         Closed:=True;
@@ -1081,16 +1083,14 @@ end;
 
 procedure TXML.LoadFromStream(AStream: TStream);
 begin
-  FData.Clear;
-  FData.CopyFrom(AStream, 0);
-  FData.Position:=0;
-  ReadFromString(FData.DataString);
+  ReadFromString(TJAXYReadUTF8(AStream));
 end;
 
 procedure TXML.ReadFromString(const AValue: String);
 var
   Parser: TTJAXYXMLParser;
 begin
+  TJAXYRequireValidText(AValue);
   FData.Clear;
   FData.WriteString(AValue);
   FData.Position:=0;
@@ -1113,8 +1113,7 @@ var
   S: String;
 begin
   S:=WriteToString;
-  if S <> '' then
-    AStream.WriteBuffer(Pointer(S)^, Length(S) * SizeOf(Char));
+  TJAXYWriteUTF8(AStream, S);
 end;
 
 function TXML.WriteToFile(const AFileName: String; AWriteMode: TXMLStringWriteMode): String;
@@ -1124,8 +1123,7 @@ begin
   Result:=WriteToString(AWriteMode);
   Stream:=TFileStream.Create(AFileName, fmCreate);
   try
-    if Result <> '' then
-      Stream.WriteBuffer(Pointer(Result)^, Length(Result) * SizeOf(Char));
+    TJAXYWriteUTF8(Stream, Result);
   finally
     Stream.Free;
   end;

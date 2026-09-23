@@ -15,10 +15,7 @@ unit TJAXY.Core;
 interface
 
 uses
-  SysUtils, Classes, Variants, DateUtils
-  {$IFNDEF FPC}
-  , System.Rtti, System.TypInfo
-  {$ENDIF};
+  SysUtils, Classes, Variants, DateUtils;
 
 {$IFNDEF FPC}
 {$DEFINE TJAXY_USE_RTTI}
@@ -40,6 +37,8 @@ type
     EnumUnknownRead: TTJAXYUnknownEnumRead;
   end;
 
+  TTJAXYObjectFactory = function: TObject;
+
   TTJAXYDocument = class;
   TTJAXY = class;
   TTJAXYParser = class;
@@ -53,6 +52,25 @@ type
   TTJAXYObject = class;
   TTJAXYArray = class;
   TTJAXYTemplate = class;
+
+  TTJAXYMapperCapability = (tjaxymcObjects, tjaxymcRecords, tjaxymcFactories);
+  TTJAXYMapperCapabilities = set of TTJAXYMapperCapability;
+
+  TTJAXYMappingDiagnostic = record
+    Path: String;
+    Message: String;
+  end;
+
+  ITJAXYObjectMapper = interface
+    ['{73F5C775-45DD-4D9C-B2B2-82A5F13C92C0}']
+    function Capabilities: TTJAXYMapperCapabilities;
+    function SerializeObject(AObject: TObject): TTJAXYValue;
+    procedure AssignObject(AObject: TObject; ASource: TTJAXYObject);
+    function SerializeRecord(ATypeInfo, ARecord: Pointer): TTJAXYValue;
+    procedure AssignRecord(ATypeInfo, ARecord: Pointer; ASource: TTJAXYObject);
+    procedure RegisterFactory(AClass: TClass; AFactory: TTJAXYObjectFactory);
+    procedure UnregisterFactory(AClass: TClass);
+  end;
 
   TTJAXYValueClass = class of TTJAXYValue;
   TTJAXYDateTimeKind = (tjaxydtkLocalDate, tjaxydtkLocalTime, tjaxydtkLocalDateTime, tjaxydtkOffsetDateTime);
@@ -74,32 +92,49 @@ type
     function GetObjectValue(Key: String): TTJAXYValue;
     class function GetSerializerRules: TTJAXYSerializerRules; static;
     class procedure SetSerializerRules(const AValue: TTJAXYSerializerRules); static;
+    class function GetMapper: ITJAXYObjectMapper; static;
+    class procedure SetMapper(const AValue: ITJAXYObjectMapper); static;
+    class function GetMapperCapabilities: TTJAXYMapperCapabilities; static;
   protected
     procedure SetRoot(AValue: TTJAXYValue); virtual;
-    {$IFDEF TJAXY_USE_RTTI}
-    class function RTTIRecordToTJAXY(const AContext: TRttiContext; const AValue: TValue): TTJAXYObject; static;
-    class procedure RTTIRecordFromTJAXY(ATargetType: PTypeInfo; ARecord: Pointer; ASource: TTJAXYObject); static;
-    {$ENDIF}
+    class procedure BeginMappingOperation; static;
+    class procedure EndMappingOperation; static;
+    class procedure PushMappingRules(const ARules: TTJAXYSerializerRules;
+      out APrevious: TTJAXYSerializerRules); static;
+    class procedure PopMappingRules(const APrevious: TTJAXYSerializerRules); static;
+    class procedure ValidateMappingTree(AValue: TTJAXYValue); static;
+    class procedure BeginDiagnosticsCollection(out APrevious, ACollector: TList); static;
+    class procedure EndDiagnosticsCollection(APrevious, ACollector: TList;
+      out ADiagnostics: TArray<TTJAXYMappingDiagnostic>); static;
   public
     class function DefaultSerializerRules: TTJAXYSerializerRules; static;
+    class procedure RegisterObjectFactory(AClass: TClass; AFactory: TTJAXYObjectFactory); static;
+    class procedure UnregisterObjectFactory(AClass: TClass); static;
     constructor Create; virtual;
     class function CreateArrayRoot: TTJAXYDocument; virtual;
     class function CreateObjectRoot: TTJAXYDocument; virtual;
     constructor CreateFromObject(AObject: TObject); virtual;
-    {$IFDEF TJAXY_USE_RTTI}
     class function CreateFromRecord<T>(const ARecord: T): TTJAXY; static;
-    {$ENDIF}
+    class function CreateFromRecordWithRules<T>(const ARecord: T; const ARules: TTJAXYSerializerRules): TTJAXY; static;
     destructor Destroy; override;
     procedure Assign(ASource: TPersistent); override;
     procedure Clear; virtual;
     procedure LoadFromFile(const AFileName: String); virtual;
-    procedure LoadFromObject(AObject: TObject); virtual;
+    procedure LoadFromObject(AObject: TObject); overload; virtual;
+    procedure LoadFromObject(AObject: TObject; const ARules: TTJAXYSerializerRules); overload;
     procedure LoadFromStream(AStream: TStream); virtual; abstract;
     procedure ReadFromString(const AValue: String); virtual;
-    procedure AssignToObject(AObject: TObject); virtual;
-    {$IFDEF TJAXY_USE_RTTI}
-    procedure AssignToRecord<T>(var ARecord: T);
-    {$ENDIF}
+    procedure AssignToObject(AObject: TObject); overload; virtual;
+    procedure AssignToObject(AObject: TObject; const ARules: TTJAXYSerializerRules); overload;
+    procedure AssignToObject(AObject: TObject; out ADiagnostics: TArray<TTJAXYMappingDiagnostic>); overload;
+    procedure AssignToObject(AObject: TObject; const ARules: TTJAXYSerializerRules;
+      out ADiagnostics: TArray<TTJAXYMappingDiagnostic>); overload;
+    procedure AssignToRecord<T>(var ARecord: T); overload;
+    procedure AssignToRecord<T>(var ARecord: T; const ARules: TTJAXYSerializerRules); overload;
+    procedure AssignToRecord<T>(var ARecord: T;
+      out ADiagnostics: TArray<TTJAXYMappingDiagnostic>); overload;
+    procedure AssignToRecord<T>(var ARecord: T; const ARules: TTJAXYSerializerRules;
+      out ADiagnostics: TArray<TTJAXYMappingDiagnostic>); overload;
     procedure SaveToFile(const AFileName: String); virtual;
     procedure SaveToStream(AStream: TStream); virtual;
     function IsEmpty: Boolean; virtual;
@@ -115,6 +150,8 @@ type
     property AsObject: TTJAXYObject read GetAsObject;
     property AsArray: TTJAXYArray read GetAsArray;
     class property SerializerRules: TTJAXYSerializerRules read GetSerializerRules write SetSerializerRules;
+    class property Mapper: ITJAXYObjectMapper read GetMapper write SetMapper;
+    class property MapperCapabilities: TTJAXYMapperCapabilities read GetMapperCapabilities;
   end;
 
   TTJAXY = class(TTJAXYDocument)
@@ -377,7 +414,6 @@ type
     function GetCount: Integer;
     function GetItem(Index: Integer): TTJAXYValue;
   protected
-    procedure Add(AValue: TTJAXYValue); overload;
     function GetAsArray: TTJAXYArray; override;
     function GetAsBoolean: Boolean; override;
     function GetAsFloat: Extended; override;
@@ -388,6 +424,7 @@ type
   public
     constructor Create; override;
     destructor Destroy; override;
+    procedure Add(AValue: TTJAXYValue); overload;
     procedure Add; overload;
     procedure Add(AValue: String); overload;
     procedure Add(AValue: Int64); overload;
@@ -425,7 +462,154 @@ type
     function Write(AValue: TTJAXYValue): String;
   end;
 
+procedure TJAXYWriteUTF8(AStream: TStream; const AText: String);
+procedure TJAXYRequireValidText(const AText: String);
+function TJAXYValidUTF8(const ABytes: TBytes): Boolean;
+function TJAXYDecodeUTF8(const ABytes: TBytes): String;
+function TJAXYReadUTF8(AStream: TStream): String;
+
 implementation
+
+uses
+  SyncObjs
+  {$IFDEF TJAXY_USE_RTTI}
+  , System.Rtti, System.TypInfo
+  {$ENDIF};
+
+procedure TJAXYRequireValidText(const AText: String);
+var
+  I: Integer;
+  CodeUnit: Integer;
+  {$IFDEF FPC}
+  RawBytes: TBytes;
+  {$ENDIF}
+begin
+  {$IFDEF FPC}
+  SetLength(RawBytes, Length(AText));
+  if Length(RawBytes) > 0 then
+    Move(AText[1], RawBytes[0], Length(RawBytes));
+  if NOT TJAXYValidUTF8(RawBytes) then
+    raise ETJAXYException.Create('Text must be valid UTF-8 without NUL bytes');
+  {$ELSE}
+  I:=1;
+  while I <= Length(AText) do
+  begin
+    CodeUnit:=Ord(AText[I]);
+    if (CodeUnit >= $D800) AND (CodeUnit <= $DBFF) then
+    begin
+      if (I = Length(AText)) OR (Ord(AText[I + 1]) < $DC00) OR
+        (Ord(AText[I + 1]) > $DFFF) then
+        raise ETJAXYException.Create('Text contains an unpaired UTF-16 surrogate');
+      Inc(I);
+    end
+    else if (CodeUnit >= $DC00) AND (CodeUnit <= $DFFF) then
+      raise ETJAXYException.Create('Text contains an unpaired UTF-16 surrogate');
+    Inc(I);
+  end;
+  {$ENDIF}
+end;
+
+procedure TJAXYWriteUTF8(AStream: TStream; const AText: String);
+var
+  Bytes: TBytes;
+begin
+  TJAXYRequireValidText(AText);
+  Bytes:=TEncoding.UTF8.GetBytes(AText);
+  if Length(Bytes) > 0 then
+    AStream.WriteBuffer(Bytes[0], Length(Bytes));
+end;
+
+function TJAXYValidUTF8(const ABytes: TBytes): Boolean;
+var
+  I, J, Continuations: Integer;
+  First, SecondMinimum, SecondMaximum: Byte;
+begin
+  Result:=False;
+  I:=0;
+  while I < Length(ABytes) do
+  begin
+    First:=ABytes[I];
+    if First = 0 then
+      Exit;
+    if First < $80 then
+    begin
+      Inc(I);
+      Continue;
+    end;
+    SecondMinimum:=$80;
+    SecondMaximum:=$BF;
+    if (First >= $C2) AND (First <= $DF) then
+      Continuations:=1
+    else if (First >= $E0) AND (First <= $EF) then
+    begin
+      Continuations:=2;
+      if First = $E0 then SecondMinimum:=$A0;
+      if First = $ED then SecondMaximum:=$9F;
+    end
+    else if (First >= $F0) AND (First <= $F4) then
+    begin
+      Continuations:=3;
+      if First = $F0 then SecondMinimum:=$90;
+      if First = $F4 then SecondMaximum:=$8F;
+    end
+    else
+      Exit;
+    if I + Continuations >= Length(ABytes) then
+      Exit;
+    if (ABytes[I + 1] < SecondMinimum) OR (ABytes[I + 1] > SecondMaximum) then
+      Exit;
+    for J:=2 to Continuations do
+      if (ABytes[I + J] < $80) OR (ABytes[I + J] > $BF) then
+        Exit;
+    Inc(I, Continuations + 1);
+  end;
+  Result:=True;
+end;
+
+function TJAXYDecodeUTF8(const ABytes: TBytes): String;
+var
+  Offset: Integer;
+  Content: TBytes;
+begin
+  if NOT TJAXYValidUTF8(ABytes) then
+    raise ETJAXYException.Create('Input must be valid UTF-8 without NUL bytes');
+  Offset:=0;
+  if (Length(ABytes) >= 3) AND (ABytes[0] = $EF) AND
+    (ABytes[1] = $BB) AND (ABytes[2] = $BF) then
+    Offset:=3;
+  SetLength(Content, Length(ABytes) - Offset);
+  if Length(Content) > 0 then
+    Move(ABytes[Offset], Content[0], Length(Content));
+  Result:=TEncoding.UTF8.GetString(Content);
+end;
+
+function TJAXYReadUTF8(AStream: TStream): String;
+var
+  Buffer: array[0..8191] of Byte;
+  Accumulated: TMemoryStream;
+  Bytes: TBytes;
+  ReadCount: Integer;
+begin
+  Accumulated:=TMemoryStream.Create;
+  try
+    repeat
+      ReadCount:=AStream.Read(Buffer, SizeOf(Buffer));
+      if ReadCount > 0 then
+      begin
+        if Accumulated.Size > MaxInt - ReadCount then
+          raise ETJAXYException.Create('UTF-8 input exceeds supported size');
+        Accumulated.WriteBuffer(Buffer, ReadCount);
+      end;
+    until ReadCount = 0;
+    SetLength(Bytes, Integer(Accumulated.Size));
+    Accumulated.Position:=0;
+    if Length(Bytes) > 0 then
+      Accumulated.ReadBuffer(Bytes[0], Length(Bytes));
+  finally
+    Accumulated.Free;
+  end;
+  Result:=TJAXYDecodeUTF8(Bytes);
+end;
 
 resourcestring
   RCS_INVALID_VALUE_CAST = 'Invalid TJAXY value cast';
@@ -467,9 +651,143 @@ type
     property Templates[Name: String]: TTJAXYTemplate read GetTemplate; default;
   end;
 
+  TTJAXYFactoryEntry = record
+    TargetClass: TClass;
+    Factory: TTJAXYObjectFactory;
+  end;
+
+  TTJAXYMappingDiagnosticItem = class
+    Path: String;
+    Message: String;
+  end;
+
+  {$IFDEF TJAXY_USE_RTTI}
+  TTJAXYDefaultMapper = class(TInterfacedObject, ITJAXYObjectMapper)
+  public
+    function Capabilities: TTJAXYMapperCapabilities;
+    function SerializeObject(AObject: TObject): TTJAXYValue;
+    procedure AssignObject(AObject: TObject; ASource: TTJAXYObject);
+    function SerializeRecord(ATypeInfo, ARecord: Pointer): TTJAXYValue;
+    procedure AssignRecord(ATypeInfo, ARecord: Pointer; ASource: TTJAXYObject);
+    procedure RegisterFactory(AClass: TClass; AFactory: TTJAXYObjectFactory);
+    procedure UnregisterFactory(AClass: TClass);
+  end;
+  {$ENDIF}
+
+
 var
   GlobTemplates: TTJAXYTemplatesList = nil;
   GlobSerializerRules: TTJAXYSerializerRules;
+  GlobObjectFactories: array of TTJAXYFactoryEntry;
+  GlobMapper: ITJAXYObjectMapper;
+  GlobRulesLock: TCriticalSection;
+
+threadvar
+  ThreadMappingDepth: Integer;
+  ThreadMappingDiagnostics: TList;
+
+procedure TJAXYAddMappingDiagnostic(const APath, AMessage: String);
+var
+  Item: TTJAXYMappingDiagnosticItem;
+begin
+  if ThreadMappingDiagnostics = nil then
+    Exit;
+  Item:=TTJAXYMappingDiagnosticItem.Create;
+  Item.Path:=APath;
+  Item.Message:=AMessage;
+  ThreadMappingDiagnostics.Add(Item);
+end;
+
+function TJAXYMappingChildPath(const APath, AName: String): String;
+begin
+  if APath = '' then
+    Result:=AName
+  else
+    Result:=APath + '.' + AName;
+end;
+
+procedure TJAXYCopyMappingDiagnostics(AList: TList;
+  out ADiagnostics: TArray<TTJAXYMappingDiagnostic>);
+var
+  I: Integer;
+  Item: TTJAXYMappingDiagnosticItem;
+begin
+  SetLength(ADiagnostics, AList.Count);
+  for I:=0 to AList.Count - 1 do
+  begin
+    Item:=TTJAXYMappingDiagnosticItem(AList[I]);
+    ADiagnostics[I].Path:=Item.Path;
+    ADiagnostics[I].Message:=Item.Message;
+  end;
+end;
+
+procedure TJAXYFreeMappingDiagnostics(AList: TList);
+var
+  I: Integer;
+begin
+  for I:=0 to AList.Count - 1 do
+    TObject(AList[I]).Free;
+  AList.Free;
+end;
+
+function TJAXYCloneSerializerRules(const ARules: TTJAXYSerializerRules): TTJAXYSerializerRules;
+var
+  I: Integer;
+begin
+  Result:=ARules;
+  Result.EnumStripPrefixes:=nil;
+  SetLength(Result.EnumStripPrefixes, Length(ARules.EnumStripPrefixes));
+  for I:=0 to High(ARules.EnumStripPrefixes) do
+    Result.EnumStripPrefixes[I]:=ARules.EnumStripPrefixes[I];
+end;
+
+function TJAXYCreateRegisteredObject(AClass: TClass): TObject;
+var
+  I: Integer;
+begin
+  Result:=nil;
+  for I:=0 to High(GlobObjectFactories) do
+    if GlobObjectFactories[I].TargetClass = AClass then
+    begin
+      Result:=GlobObjectFactories[I].Factory();
+      if (Result <> nil) AND NOT Result.InheritsFrom(AClass) then
+      begin
+        Result.Free;
+        raise ETJAXYException.Create('Object factory returned an incompatible class');
+      end;
+      Exit;
+    end;
+end;
+
+procedure TJAXYRegisterFactoryDefault(AClass: TClass; AFactory: TTJAXYObjectFactory);
+var
+  I: Integer;
+begin
+  for I:=0 to High(GlobObjectFactories) do
+    if GlobObjectFactories[I].TargetClass = AClass then
+    begin
+      GlobObjectFactories[I].Factory:=AFactory;
+      Exit;
+    end;
+  I:=Length(GlobObjectFactories);
+  SetLength(GlobObjectFactories, I + 1);
+  GlobObjectFactories[I].TargetClass:=AClass;
+  GlobObjectFactories[I].Factory:=AFactory;
+end;
+
+procedure TJAXYUnregisterFactoryDefault(AClass: TClass);
+var
+  I, J: Integer;
+begin
+  for I:=0 to High(GlobObjectFactories) do
+    if GlobObjectFactories[I].TargetClass = AClass then
+    begin
+      for J:=I to High(GlobObjectFactories) - 1 do
+        GlobObjectFactories[J]:=GlobObjectFactories[J + 1];
+      SetLength(GlobObjectFactories, Length(GlobObjectFactories) - 1);
+      Exit;
+    end;
+end;
 
 function TJAXYStripEnumPrefix(const AName: String): String;
 var
@@ -527,548 +845,50 @@ begin
 end;
 
 {$IFDEF TJAXY_USE_RTTI}
-function TJAXYRTTIIsStringKind(const AKind: TTypeKind): Boolean;
-begin
-  Result:=(AKind = tkString) OR (AKind = tkLString) OR (AKind = tkWString) OR
-    (AKind = tkUString) OR (AKind = tkAnsiString) OR (AKind = tkUnicodeString);
-end;
-
-function TJAXYRTTIGetMemberValue(AObject: TTJAXYObject; const AName: String): TTJAXYValue;
-var
-  I: Integer;
-begin
-  Result:=nil;
-  if NOT Assigned(AObject) then
-    Exit;
-
-  for I:=0 to AObject.Count - 1 do
-    if SameText(AObject.Name[I], AName) then
-      Exit(AObject.Item[I]);
-end;
-
-function TJAXYRTTIIsAccessible(AMember: TRttiMember): Boolean;
-begin
-  Result:=Ord(AMember.Visibility) >= 2;
-end;
-
-function TJAXYRTTIEnumToTJAXYName(ATypeInfo: PTypeInfo; const AName: String): String;
-begin
-  Result:=TJAXYApplyNameCase(TJAXYStripEnumPrefix(AName));
-end;
-
-function TJAXYRTTITJAXYNameToEnumValue(ATargetType: TRttiType; const AName: String): Integer;
-var
-  TypeData: PTypeData;
-  I: Integer;
-  RawName: String;
-begin
-  Result:=-1;
-
-  if TTJAXYDocument.SerializerRules.EnumAcceptRawNameOnRead then
-  begin
-    Result:=GetEnumValue(ATargetType.Handle, AName);
-    if Result >= 0 then
-      Exit;
-  end;
-
-  TypeData:=GetTypeData(ATargetType.Handle);
-  if TypeData = nil then
-    Exit;
-
-  for I:=TypeData^.MinValue to TypeData^.MaxValue do
-  begin
-    RawName:=GetEnumName(ATargetType.Handle, I);
-    if SameText(TJAXYRTTIEnumToTJAXYName(ATargetType.Handle, RawName), AName) then
-      Exit(I);
-  end;
-end;
-
-function TJAXYRTTIToTJAXY(AObject: TObject): TTJAXYObject; forward;
-function TJAXYRTTISerializeValue(const AContext: TRttiContext; const AValue: TValue): TTJAXYValue; forward;
-function TJAXYRTTITJAXYToValue(const AContext: TRttiContext; ATargetType: TRttiType; ASource: TTJAXYValue): TValue; forward;
-procedure TJAXYRTTIFromTJAXY(ATargetType: TRttiType; ATarget: TObject; ASource: TTJAXYObject); forward;
-
-function TJAXYRTTISerializeValue(const AContext: TRttiContext; const AValue: TValue): TTJAXYValue;
-var
-  I: Integer;
-  Arr: TTJAXYArray;
-  Raw: PByte;
-  SetOrdinal: Int64;
-begin
-  if AValue.IsEmpty then
-    Exit(TTJAXYNull.Create);
-
-  if TJAXYRTTIIsStringKind(AValue.Kind) then
-    Exit(TTJAXYString.CreateFrom(AValue.AsString));
-
-  case AValue.Kind of
-    tkClass:
-      if AValue.AsObject = nil then
-        Result:=TTJAXYNull.Create
-      else
-        Result:=TJAXYRTTIToTJAXY(AValue.AsObject);
-    tkRecord:
-      Result:=TTJAXYDocument.RTTIRecordToTJAXY(AContext, AValue);
-    tkArray, tkDynArray:
-    begin
-      Arr:=TTJAXYArray.Create;
-      for I:=0 to AValue.GetArrayLength - 1 do
-        Arr.Add(TJAXYRTTISerializeValue(AContext, AValue.GetArrayElement(I)));
-      Result:=Arr;
-    end;
-    tkChar, tkWideChar:
-      if AValue.AsString <> '' then
-        Result:=TTJAXYString.CreateFrom(AValue.AsString[1])
-      else
-        Result:=TTJAXYString.CreateFrom('');
-    tkInteger:
-      Result:=TTJAXYInteger.CreateFrom(AValue.AsOrdinal);
-    tkInt64:
-      Result:=TTJAXYInteger.CreateFrom(AValue.AsInt64);
-    tkFloat:
-      Result:=TTJAXYFloat.CreateFrom(AValue.AsExtended);
-    tkEnumeration:
-      if AValue.TypeInfo = TypeInfo(Boolean) then
-        Result:=TTJAXYBoolean.CreateFrom(AValue.AsBoolean)
-      else if TTJAXYDocument.SerializerRules.EnumMode = tjaxjemName then
-        Result:=TTJAXYString.CreateFrom(TJAXYRTTIEnumToTJAXYName(AValue.TypeInfo, GetEnumName(AValue.TypeInfo, AValue.AsOrdinal)))
-      else
-        Result:=TTJAXYInteger.CreateFrom(AValue.AsOrdinal);
-    tkSet:
-    begin
-      SetOrdinal:=0;
-      Raw:=AValue.GetReferenceToRawData;
-      if Assigned(Raw) then
-      begin
-        for I:=0 to AValue.DataSize - 1 do
-        begin
-          if I >= SizeOf(SetOrdinal) then
-            Break;
-          SetOrdinal:=SetOrdinal OR (Int64(Raw^) SHL (I * 8));
-          Inc(Raw);
-        end;
-      end;
-      Result:=TTJAXYInteger.CreateFrom(SetOrdinal);
-    end;
-    tkVariant:
-      try
-        Result:=TTJAXYString.CreateFrom(VarToStr(AValue.AsVariant));
-      except
-        Result:=TTJAXYNull.Create;
-      end;
-  else
-    Result:=TTJAXYNull.Create;
-  end;
-end;
-
-function TJAXYRTTIToTJAXY(AObject: TObject): TTJAXYObject;
-var
-  Context: TRttiContext;
-  RType: TRttiType;
-  Prop: TRttiProperty;
-  Field: TRttiField;
-  V: TTJAXYValue;
-begin
-  Result:=TTJAXYObject.Create;
-  if NOT Assigned(AObject) then
-    Exit;
-
-  Context:=TRttiContext.Create;
-  RType:=Context.GetType(AObject.ClassType);
-
-  for Prop in RType.GetProperties do
-  begin
-    if (NOT TJAXYRTTIIsAccessible(Prop)) OR (NOT Prop.IsReadable) then
-      Continue;
-    try
-      V:=TJAXYRTTISerializeValue(Context, Prop.GetValue(AObject));
-      if Assigned(V) AND (NOT Result.HasKey(Prop.Name)) then
-        Result.Add(Prop.Name, V);
-    except
-    end;
-  end;
-
-  for Field in RType.GetFields do
-  begin
-    if NOT TJAXYRTTIIsAccessible(Field) then
-      Continue;
-    try
-      if NOT Result.HasKey(Field.Name) then
-      begin
-        V:=TJAXYRTTISerializeValue(Context, Field.GetValue(AObject));
-        Result.Add(Field.Name, V);
-      end;
-    except
-    end;
-  end;
-end;
-
-procedure TJAXYRTTIDeserializeArrayToValue(const AContext: TRttiContext; const ATargetType: TRttiType; var ATargetValue: TValue; ASource: TTJAXYArray);
-var
-  I: Integer;
-  ArrayLen: Integer;
-  ElemType: TRttiType;
-  ElementValue: TValue;
-begin
-  if (ATargetType = nil) OR (NOT Assigned(ASource)) OR ATargetValue.IsEmpty then
-    Exit;
-
-  case ATargetType.TypeKind of
-    tkArray: ElemType:=TRttiArrayType(ATargetType).ElementType;
-    tkDynArray: ElemType:=TRttiDynamicArrayType(ATargetType).ElementType;
-  else
-    Exit;
-  end;
-
-  if NOT Assigned(ElemType) then
-    Exit;
-
-  ArrayLen:=ATargetValue.GetArrayLength;
-  if ASource.Count < ArrayLen then
-    ArrayLen:=ASource.Count;
-
-  for I:=0 to ArrayLen - 1 do
-  begin
-    ElementValue:=TJAXYRTTITJAXYToValue(AContext, ElemType, ASource[I]);
-    if NOT ElementValue.IsEmpty then
-      ATargetValue.SetArrayElement(I, ElementValue);
-  end;
-end;
-
-function TJAXYRTTITJAXYToValue(const AContext: TRttiContext; ATargetType: TRttiType; ASource: TTJAXYValue): TValue;
-var
-  LObj: TObject;
-  LString: String;
-  I: Integer;
-  I64: Int64;
-  Dbl: Extended;
-  IObj: TRttiInstanceType;
-  ArrValue: Pointer;
-  ArrLen: Integer;
-  FSingle: Single;
-  FDouble: Double;
-  FExtended: Extended;
-  FCurrency: Currency;
-  Ch: Char;
-  VarValue: Variant;
-begin
-  Result:=TValue.Empty;
-  if (ATargetType = nil) OR (NOT Assigned(ASource)) then
-    Exit;
-
-  if TJAXYRTTIIsStringKind(ATargetType.TypeKind) then
-  begin
-    case ASource.Typ of
-      tjaxytString: Result:=TValue.From<String>(ASource.AsString);
-      tjaxytInteger: Result:=TValue.From<String>(IntToStr(ASource.AsInteger));
-      tjaxytFloat: Result:=TValue.From<String>(FloatToStr(ASource.AsFloat));
-      tjaxytBoolean: Result:=TValue.From<String>(BoolToStr(ASource.AsBoolean, True));
-    end;
-    Exit;
-  end;
-
-  case ATargetType.TypeKind of
-    tkInteger:
-    begin
-      if ASource.Typ = tjaxytInteger then
-        Result:=TValue.FromOrdinal(ATargetType.Handle, ASource.AsInteger)
-      else if ASource.Typ = tjaxytFloat then
-        Result:=TValue.FromOrdinal(ATargetType.Handle, Trunc(ASource.AsFloat))
-      else if (ASource.Typ = tjaxytString) AND TryStrToInt64(Trim(ASource.AsString), I64) then
-        Result:=TValue.FromOrdinal(ATargetType.Handle, Integer(I64));
-    end;
-    tkInt64:
-    begin
-      if ASource.Typ = tjaxytInteger then
-        Result:=TValue.From<Int64>(ASource.AsInteger)
-      else if ASource.Typ = tjaxytFloat then
-        Result:=TValue.From<Int64>(Trunc(ASource.AsFloat))
-      else if (ASource.Typ = tjaxytString) AND TryStrToInt64(Trim(ASource.AsString), I64) then
-        Result:=TValue.From<Int64>(I64);
-    end;
-    tkFloat:
-    begin
-      if ASource.Typ = tjaxytInteger then
-        Dbl:=ASource.AsInteger
-      else if ASource.Typ = tjaxytFloat then
-        Dbl:=ASource.AsFloat
-      else if (ASource.Typ <> tjaxytString) OR (NOT TryStrToFloat(Trim(ASource.AsString), Dbl)) then
-        Exit;
-
-      case GetTypeData(ATargetType.Handle)^.FloatType of
-        ftSingle:
-        begin
-          FSingle:=Dbl;
-          TValue.Make(@FSingle, ATargetType.Handle, Result);
-        end;
-        ftDouble:
-        begin
-          FDouble:=Dbl;
-          TValue.Make(@FDouble, ATargetType.Handle, Result);
-        end;
-        ftExtended:
-        begin
-          FExtended:=Dbl;
-          TValue.Make(@FExtended, ATargetType.Handle, Result);
-        end;
-        ftComp:
-        begin
-          I64:=Round(Dbl);
-          TValue.Make(@I64, ATargetType.Handle, Result);
-        end;
-        ftCurr:
-        begin
-          FCurrency:=Dbl;
-          TValue.Make(@FCurrency, ATargetType.Handle, Result);
-        end;
-      end;
-    end;
-    tkChar, tkWideChar:
-      if (ASource.Typ = tjaxytString) AND (ASource.AsString <> '') then
-      begin
-        Ch:=ASource.AsString[1];
-        TValue.Make(@Ch, ATargetType.Handle, Result);
-      end;
-    tkEnumeration:
-    begin
-      I:=-1;
-      if ATargetType.Handle = TypeInfo(Boolean) then
-      begin
-        if ASource.Typ = tjaxytBoolean then
-          Result:=TValue.From<Boolean>(ASource.AsBoolean)
-        else if ASource.Typ = tjaxytInteger then
-          Result:=TValue.From<Boolean>(ASource.AsInteger <> 0)
-        else if ASource.Typ = tjaxytString then
-        begin
-          LString:=LowerCase(Trim(ASource.AsString));
-          if LString = 'true' then
-            Result:=TValue.From<Boolean>(True)
-          else if LString = 'false' then
-            Result:=TValue.From<Boolean>(False);
-        end;
-      end else
-      begin
-        if ASource.Typ = tjaxytString then
-          I:=TJAXYRTTITJAXYNameToEnumValue(ATargetType, ASource.AsString)
-        else if ASource.Typ IN [tjaxytInteger, tjaxytFloat, tjaxytBoolean] then
-          if TTJAXYDocument.SerializerRules.EnumAcceptOrdinalOnRead then
-            I:=ASource.AsInteger;
-
-        if I >= 0 then
-          Result:=TValue.FromOrdinal(ATargetType.Handle, I)
-        else
-          case TTJAXYDocument.SerializerRules.EnumUnknownRead of
-            tjaxjurDefaultFirst:
-              Result:=TValue.FromOrdinal(ATargetType.Handle, GetTypeData(ATargetType.Handle)^.MinValue);
-            tjaxjurRaise:
-              raise ETJAXYException.Create(Format(RCS_INVALID_ENUM_VALUE, [ASource.AsString, ATargetType.Name]));
-          end;
-      end;
-    end;
-    tkSet:
-    begin
-      I:=-1;
-      if ASource.Typ = tjaxytString then
-        TryStrToInt(Trim(ASource.AsString), I)
-      else if ASource.Typ IN [tjaxytInteger, tjaxytFloat, tjaxytBoolean] then
-        I:=ASource.AsInteger;
-      if I >= 0 then
-      begin
-        I64:=I;
-        TValue.Make(@I64, ATargetType.Handle, Result);
-      end;
-    end;
-    tkVariant:
-    begin
-      case ASource.Typ of
-        tjaxytNull: VarValue:=Null;
-        tjaxytInteger: VarValue:=ASource.AsInteger;
-        tjaxytFloat: VarValue:=ASource.AsFloat;
-        tjaxytString: VarValue:=ASource.AsString;
-        tjaxytBoolean: VarValue:=ASource.AsBoolean;
-      else
-        VarValue:=Null;
-      end;
-      Result:=TValue.FromVariant(VarValue);
-    end;
-    tkClass:
-    begin
-      if ASource.Typ = tjaxytNull then
-        Exit;
-      if NOT (ATargetType IS TRttiInstanceType) then
-        Exit;
-      IObj:=TRttiInstanceType(ATargetType);
-
-      if IObj.MetaclassType.InheritsFrom(TTJAXYValue) then
-      begin
-        LObj:=ASource.Copy;
-        if LObj.InheritsFrom(IObj.MetaclassType) then
-          TValue.Make(@LObj, ATargetType.Handle, Result)
-        else
-          LObj.Free;
-        Exit;
-      end;
-
-      if ASource.Typ <> tjaxytObject then
-        Exit;
-
-      try
-        LObj:=IObj.MetaclassType.Create;
-      except
-        Exit;
-      end;
-      try
-        TJAXYRTTIFromTJAXY(ATargetType, LObj, ASource.AsObject);
-        TValue.Make(@LObj, ATargetType.Handle, Result);
-      except
-        LObj.Free;
-        raise;
-      end;
-    end;
-    tkDynArray:
-      if ASource.Typ = tjaxytArray then
-      begin
-        ArrLen:=ASource.AsArray.Count;
-        ArrValue:=nil;
-        DynArraySetLength(ArrValue, ATargetType.Handle, 1, @ArrLen);
-        TValue.Make(@ArrValue, ATargetType.Handle, Result);
-        TJAXYRTTIDeserializeArrayToValue(AContext, ATargetType, Result, ASource.AsArray);
-      end;
-    tkRecord:
-      Exit;
-  end;
-end;
-
-procedure TJAXYRTTIFromTJAXY(ATargetType: TRttiType; ATarget: TObject; ASource: TTJAXYObject);
-var
-  Context: TRttiContext;
-  Prop: TRttiProperty;
-  Field: TRttiField;
-  Source: TTJAXYValue;
-  NewValue: TValue;
-begin
-  if (ATarget = nil) OR (ASource = nil) then
-    Exit;
-
-  Context:=TRttiContext.Create;
-  for Prop in Context.GetType(ATarget.ClassType).GetProperties do
-  begin
-    if (NOT TJAXYRTTIIsAccessible(Prop)) OR (NOT Prop.IsWritable) OR (NOT Prop.IsReadable) then
-      Continue;
-    Source:=TJAXYRTTIGetMemberValue(ASource, Prop.Name);
-    if Source = nil then
-      Continue;
-    try
-      if (Prop.PropertyType.TypeKind = tkDynArray) AND (Source IS TTJAXYArray) then
-      begin
-        NewValue:=TJAXYRTTITJAXYToValue(Context, Prop.PropertyType, Source);
-        if NOT NewValue.IsEmpty then
-          Prop.SetValue(ATarget, NewValue);
-      end
-      else if (Prop.PropertyType.TypeKind = tkArray) AND (Source IS TTJAXYArray) then
-      begin
-        NewValue:=Prop.GetValue(ATarget);
-        TJAXYRTTIDeserializeArrayToValue(Context, Prop.PropertyType, NewValue, Source.AsArray);
-        Prop.SetValue(ATarget, NewValue);
-      end
-      else
-      begin
-        NewValue:=TJAXYRTTITJAXYToValue(Context, Prop.PropertyType, Source);
-        if NOT NewValue.IsEmpty then
-          Prop.SetValue(ATarget, NewValue);
-      end;
-    except
-    end;
-  end;
-
-  for Field in Context.GetType(ATarget.ClassType).GetFields do
-  begin
-    if NOT TJAXYRTTIIsAccessible(Field) then
-      Continue;
-    Source:=TJAXYRTTIGetMemberValue(ASource, Field.Name);
-    if Source = nil then
-      Continue;
-    try
-      if (Field.FieldType.TypeKind = tkDynArray) AND (Source IS TTJAXYArray) then
-      begin
-        NewValue:=TJAXYRTTITJAXYToValue(Context, Field.FieldType, Source);
-        if NOT NewValue.IsEmpty then
-          Field.SetValue(ATarget, NewValue);
-      end
-      else if (Field.FieldType.TypeKind = tkArray) AND (Source IS TTJAXYArray) then
-      begin
-        NewValue:=Field.GetValue(ATarget);
-        TJAXYRTTIDeserializeArrayToValue(Context, Field.FieldType, NewValue, Source.AsArray);
-        Field.SetValue(ATarget, NewValue);
-      end
-      else
-      begin
-        NewValue:=TJAXYRTTITJAXYToValue(Context, Field.FieldType, Source);
-        if NOT NewValue.IsEmpty then
-          Field.SetValue(ATarget, NewValue);
-      end;
-    except
-    end;
-  end;
-end;
+function TJAXYFormatSettings: TFormatSettings; forward;
+{$I TJAXY.Mapper.Delphi.inc}
 {$ENDIF}
 
 function TJAXYFormatSettings: TFormatSettings;
 begin
-  {$IFDEF FPC}
-  Result:=DefaultFormatSettings;
-  {$ELSE}
-  Result:=TFormatSettings.Create;
-  {$ENDIF}
+  Result:=FormatSettings;
   Result.DecimalSeparator:='.';
   Result.ThousandSeparator:=',';
 end;
 
 function TJAXYInvalidArray: TTJAXYArray;
 begin
-  {$IFDEF FPC}
   Result:=nil;
-  {$ENDIF}
   raise ETJAXYException.Create(RCS_INVALID_VALUE_CAST);
 end;
 
 function TJAXYInvalidBoolean: Boolean;
 begin
-  {$IFDEF FPC}
   Result:=False;
-  {$ENDIF}
   raise ETJAXYException.Create(RCS_INVALID_VALUE_CAST);
 end;
 
 function TJAXYInvalidFloat: Extended;
 begin
-  {$IFDEF FPC}
   Result:=0;
-  {$ENDIF}
   raise ETJAXYException.Create(RCS_INVALID_VALUE_CAST);
 end;
 
 function TJAXYInvalidInteger: Int64;
 begin
-  {$IFDEF FPC}
   Result:=0;
-  {$ENDIF}
   raise ETJAXYException.Create(RCS_INVALID_VALUE_CAST);
 end;
 
 function TJAXYInvalidObject: TTJAXYObject;
 begin
-  {$IFDEF FPC}
   Result:=nil;
-  {$ENDIF}
   raise ETJAXYException.Create(RCS_INVALID_VALUE_CAST);
 end;
 
 function TJAXYInvalidString: String;
 begin
-  {$IFDEF FPC}
   Result:='';
-  {$ENDIF}
   raise ETJAXYException.Create(RCS_INVALID_VALUE_CAST);
 end;
 
@@ -1188,6 +1008,94 @@ end;
 
 { TTJAXYDocument }
 
+class procedure TTJAXYDocument.BeginMappingOperation;
+begin
+  GlobRulesLock.Enter;
+  Inc(ThreadMappingDepth);
+end;
+
+class procedure TTJAXYDocument.BeginDiagnosticsCollection(out APrevious,
+  ACollector: TList);
+begin
+  ACollector:=TList.Create;
+  APrevious:=ThreadMappingDiagnostics;
+  ThreadMappingDiagnostics:=ACollector;
+end;
+
+class procedure TTJAXYDocument.EndDiagnosticsCollection(APrevious,
+  ACollector: TList; out ADiagnostics: TArray<TTJAXYMappingDiagnostic>);
+begin
+  ThreadMappingDiagnostics:=APrevious;
+  try
+    TJAXYCopyMappingDiagnostics(ACollector, ADiagnostics);
+  finally
+    TJAXYFreeMappingDiagnostics(ACollector);
+  end;
+end;
+
+class procedure TTJAXYDocument.EndMappingOperation;
+begin
+  Dec(ThreadMappingDepth);
+  GlobRulesLock.Leave;
+end;
+
+class procedure TTJAXYDocument.PushMappingRules(const ARules: TTJAXYSerializerRules;
+  out APrevious: TTJAXYSerializerRules);
+begin
+  BeginMappingOperation;
+  try
+    APrevious:=GlobSerializerRules;
+    GlobSerializerRules:=TJAXYCloneSerializerRules(ARules);
+  except
+    EndMappingOperation;
+    raise;
+  end;
+end;
+
+class procedure TTJAXYDocument.PopMappingRules(const APrevious: TTJAXYSerializerRules);
+begin
+  GlobSerializerRules:=APrevious;
+  EndMappingOperation;
+end;
+
+class procedure TTJAXYDocument.ValidateMappingTree(AValue: TTJAXYValue);
+var
+  Seen: TList;
+
+  procedure Visit(ANode: TTJAXYValue; ADepth: Integer; const APath: String);
+  var
+    I: Integer;
+  begin
+    if ADepth > 64 then
+      raise ETJAXYException.Create(APath + ': object mapping exceeds 64 nesting levels');
+    if Seen.IndexOf(ANode) >= 0 then
+      raise ETJAXYException.Create(APath + ': object mapping cycle detected');
+    Seen.Add(ANode);
+    try
+      if ANode IS TTJAXYObject then
+      begin
+        for I:=0 to ANode.AsObject.Count - 1 do
+          Visit(ANode.AsObject.Item[I], ADepth + 1, APath + '.' + ANode.AsObject.Name[I]);
+      end
+      else if ANode IS TTJAXYArray then
+        for I:=0 to ANode.AsArray.Count - 1 do
+          Visit(ANode.AsArray[I], ADepth + 1, APath + '[' + IntToStr(I) + ']');
+    finally
+      Seen.Delete(Seen.Count - 1);
+    end;
+  end;
+
+begin
+  if AValue = nil then
+    Exit;
+  Seen:=TList.Create;
+  try
+    Visit(AValue, 1, '$');
+  finally
+    Seen.Free;
+  end;
+end;
+
 constructor TTJAXYDocument.Create;
 begin
   inherited Create;
@@ -1212,6 +1120,38 @@ begin
   LoadFromObject(AObject);
 end;
 
+class procedure TTJAXYDocument.RegisterObjectFactory(AClass: TClass; AFactory: TTJAXYObjectFactory);
+var
+  ActiveMapper: ITJAXYObjectMapper;
+begin
+  if (AClass = nil) OR (NOT Assigned(AFactory)) then
+    raise EArgumentException.Create('Object factory requires a class and callback');
+  BeginMappingOperation;
+  try
+    ActiveMapper:=GetMapper;
+    if (ActiveMapper = nil) OR NOT (tjaxymcFactories IN ActiveMapper.Capabilities) then
+      raise ETJAXYException.Create('Factory registration requires a registered mapper on this compiler');
+    ActiveMapper.RegisterFactory(AClass, AFactory);
+  finally
+    EndMappingOperation;
+  end;
+end;
+
+class procedure TTJAXYDocument.UnregisterObjectFactory(AClass: TClass);
+var
+  ActiveMapper: ITJAXYObjectMapper;
+begin
+  BeginMappingOperation;
+  try
+    ActiveMapper:=GetMapper;
+    if (ActiveMapper = nil) OR NOT (tjaxymcFactories IN ActiveMapper.Capabilities) then
+      raise ETJAXYException.Create('Factory registration requires a registered mapper on this compiler');
+    ActiveMapper.UnregisterFactory(AClass);
+  finally
+    EndMappingOperation;
+  end;
+end;
+
 class function TTJAXYDocument.DefaultSerializerRules: TTJAXYSerializerRules;
 begin
   Result.EnumMode:=tjaxjemOrdinal;
@@ -1222,21 +1162,41 @@ begin
   Result.EnumUnknownRead:=tjaxjurIgnore;
 end;
 
-{$IFDEF TJAXY_USE_RTTI}
 class function TTJAXYDocument.CreateFromRecord<T>(const ARecord: T): TTJAXY;
 var
-  Context: TRttiContext;
-  RecordValue: TValue;
+  Value: TTJAXYValue;
+  ActiveMapper: ITJAXYObjectMapper;
 begin
-  Result:=TTJAXY.CreateObjectRoot;
-  RecordValue:=TValue.From<T>(ARecord);
-  if NOT RecordValue.IsEmpty then
-  begin
-    Context:=TRttiContext.Create;
-    Result.SetRoot(RTTIRecordToTJAXY(Context, RecordValue));
+  BeginMappingOperation;
+  try
+    ActiveMapper:=GetMapper;
+    if (ActiveMapper = nil) OR NOT (tjaxymcRecords IN ActiveMapper.Capabilities) then
+      raise ETJAXYException.Create('Record mapping requires a registered mapper on this compiler');
+    Result:=TTJAXY.CreateObjectRoot;
+    try
+      Value:=ActiveMapper.SerializeRecord(TypeInfo(T), @ARecord);
+      Result.SetRoot(Value);
+    except
+      Result.Free;
+      raise;
+    end;
+  finally
+    EndMappingOperation;
   end;
 end;
-{$ENDIF}
+
+class function TTJAXYDocument.CreateFromRecordWithRules<T>(const ARecord: T;
+  const ARules: TTJAXYSerializerRules): TTJAXY;
+var
+  Previous: TTJAXYSerializerRules;
+begin
+  PushMappingRules(ARules, Previous);
+  try
+    Result:=CreateFromRecord<T>(ARecord);
+  finally
+    PopMappingRules(Previous);
+  end;
+end;
 
 destructor TTJAXYDocument.Destroy;
 begin
@@ -1245,30 +1205,141 @@ begin
 end;
 
 procedure TTJAXYDocument.AssignToObject(AObject: TObject);
-{$IFDEF TJAXY_USE_RTTI}
 var
-  Context: TRttiContext;
-  TargetType: TRttiType;
-{$ENDIF}
+  ActiveMapper: ITJAXYObjectMapper;
 begin
-{$IFDEF TJAXY_USE_RTTI}
+  BeginMappingOperation;
+  try
   if Assigned(AObject) AND IsObject then
   begin
-    Context:=TRttiContext.Create;
-    TargetType:=Context.GetType(AObject.ClassType);
-    if Assigned(TargetType) then
-      TJAXYRTTIFromTJAXY(TargetType, AObject, AsObject);
+    ValidateMappingTree(Root);
+    ActiveMapper:=GetMapper;
+    if (ActiveMapper = nil) OR NOT (tjaxymcObjects IN ActiveMapper.Capabilities) then
+      raise ETJAXYException.Create('Object mapping requires a registered mapper on this compiler');
+    ActiveMapper.AssignObject(AObject, AsObject);
   end;
-{$ENDIF}
+  finally
+    EndMappingOperation;
+  end;
 end;
 
-{$IFDEF TJAXY_USE_RTTI}
-procedure TTJAXYDocument.AssignToRecord<T>(var ARecord: T);
+procedure TTJAXYDocument.AssignToObject(AObject: TObject; const ARules: TTJAXYSerializerRules);
+var
+  PreviousRules: TTJAXYSerializerRules;
 begin
-  if IsObject then
-    RTTIRecordFromTJAXY(TypeInfo(T), @ARecord, AsObject);
+  GlobRulesLock.Enter;
+  try
+    PreviousRules:=GlobSerializerRules;
+    GlobSerializerRules:=TJAXYCloneSerializerRules(ARules);
+    try
+      AssignToObject(AObject);
+    finally
+      GlobSerializerRules:=PreviousRules;
+    end;
+  finally
+    GlobRulesLock.Leave;
+  end;
 end;
-{$ENDIF}
+
+procedure TTJAXYDocument.AssignToObject(AObject: TObject;
+  out ADiagnostics: TArray<TTJAXYMappingDiagnostic>);
+var
+  Collector, Previous: TList;
+begin
+  Collector:=TList.Create;
+  Previous:=ThreadMappingDiagnostics;
+  ThreadMappingDiagnostics:=Collector;
+  try
+    try
+      AssignToObject(AObject);
+    finally
+      TJAXYCopyMappingDiagnostics(Collector, ADiagnostics);
+    end;
+  finally
+    ThreadMappingDiagnostics:=Previous;
+    TJAXYFreeMappingDiagnostics(Collector);
+  end;
+end;
+
+procedure TTJAXYDocument.AssignToObject(AObject: TObject;
+  const ARules: TTJAXYSerializerRules;
+  out ADiagnostics: TArray<TTJAXYMappingDiagnostic>);
+var
+  Collector, Previous: TList;
+begin
+  Collector:=TList.Create;
+  Previous:=ThreadMappingDiagnostics;
+  ThreadMappingDiagnostics:=Collector;
+  try
+    try
+      AssignToObject(AObject, ARules);
+    finally
+      TJAXYCopyMappingDiagnostics(Collector, ADiagnostics);
+    end;
+  finally
+    ThreadMappingDiagnostics:=Previous;
+    TJAXYFreeMappingDiagnostics(Collector);
+  end;
+end;
+
+procedure TTJAXYDocument.AssignToRecord<T>(var ARecord: T);
+var
+  ActiveMapper: ITJAXYObjectMapper;
+begin
+  BeginMappingOperation;
+  try
+    if IsObject then
+    begin
+      ValidateMappingTree(Root);
+      ActiveMapper:=GetMapper;
+      if (ActiveMapper = nil) OR NOT (tjaxymcRecords IN ActiveMapper.Capabilities) then
+        raise ETJAXYException.Create('Record mapping requires a registered mapper on this compiler');
+      ActiveMapper.AssignRecord(TypeInfo(T), @ARecord, AsObject);
+    end;
+  finally
+    EndMappingOperation;
+  end;
+end;
+
+procedure TTJAXYDocument.AssignToRecord<T>(var ARecord: T;
+  const ARules: TTJAXYSerializerRules);
+var
+  Previous: TTJAXYSerializerRules;
+begin
+  PushMappingRules(ARules, Previous);
+  try
+    AssignToRecord<T>(ARecord);
+  finally
+    PopMappingRules(Previous);
+  end;
+end;
+
+procedure TTJAXYDocument.AssignToRecord<T>(var ARecord: T;
+  out ADiagnostics: TArray<TTJAXYMappingDiagnostic>);
+var
+  Collector, Previous: TList;
+begin
+  BeginDiagnosticsCollection(Previous, Collector);
+  try
+    AssignToRecord<T>(ARecord);
+  finally
+    EndDiagnosticsCollection(Previous, Collector, ADiagnostics);
+  end;
+end;
+
+procedure TTJAXYDocument.AssignToRecord<T>(var ARecord: T;
+  const ARules: TTJAXYSerializerRules;
+  out ADiagnostics: TArray<TTJAXYMappingDiagnostic>);
+var
+  Collector, Previous: TList;
+begin
+  BeginDiagnosticsCollection(Previous, Collector);
+  try
+    AssignToRecord<T>(ARecord, ARules);
+  finally
+    EndDiagnosticsCollection(Previous, Collector, ADiagnostics);
+  end;
+end;
 
 procedure TTJAXYDocument.Assign(ASource: TPersistent);
 begin
@@ -1321,7 +1392,45 @@ end;
 
 class function TTJAXYDocument.GetSerializerRules: TTJAXYSerializerRules;
 begin
-  Result:=GlobSerializerRules;
+  GlobRulesLock.Enter;
+  try
+    Result:=TJAXYCloneSerializerRules(GlobSerializerRules);
+  finally
+    GlobRulesLock.Leave;
+  end;
+end;
+
+class function TTJAXYDocument.GetMapper: ITJAXYObjectMapper;
+begin
+  GlobRulesLock.Enter;
+  try
+    Result:=GlobMapper;
+  finally
+    GlobRulesLock.Leave;
+  end;
+end;
+
+class procedure TTJAXYDocument.SetMapper(const AValue: ITJAXYObjectMapper);
+begin
+  if ThreadMappingDepth <> 0 then
+    raise ETJAXYException.Create('Mapper cannot change during a mapping operation');
+  GlobRulesLock.Enter;
+  try
+    GlobMapper:=AValue;
+  finally
+    GlobRulesLock.Leave;
+  end;
+end;
+
+class function TTJAXYDocument.GetMapperCapabilities: TTJAXYMapperCapabilities;
+var
+  ActiveMapper: ITJAXYObjectMapper;
+begin
+  ActiveMapper:=GetMapper;
+  if ActiveMapper = nil then
+    Result:=[]
+  else
+    Result:=ActiveMapper.Capabilities;
 end;
 
 function TTJAXYDocument.IsEmpty: Boolean;
@@ -1342,20 +1451,49 @@ begin
 end;
 
 procedure TTJAXYDocument.LoadFromObject(AObject: TObject);
+var
+  ActiveMapper: ITJAXYObjectMapper;
 begin
-{$IFDEF TJAXY_USE_RTTI}
+  BeginMappingOperation;
+  try
   if Assigned(AObject) then
-    SetRoot(TJAXYRTTIToTJAXY(AObject))
+  begin
+    ActiveMapper:=GetMapper;
+    if (ActiveMapper = nil) OR NOT (tjaxymcObjects IN ActiveMapper.Capabilities) then
+      raise ETJAXYException.Create('Object mapping requires a registered mapper on this compiler');
+    SetRoot(ActiveMapper.SerializeObject(AObject));
+  end
   else
-{$ENDIF}
     RootNewObject;
+  finally
+    EndMappingOperation;
+  end;
+end;
+
+procedure TTJAXYDocument.LoadFromObject(AObject: TObject; const ARules: TTJAXYSerializerRules);
+var
+  PreviousRules: TTJAXYSerializerRules;
+begin
+  GlobRulesLock.Enter;
+  try
+    PreviousRules:=GlobSerializerRules;
+    GlobSerializerRules:=TJAXYCloneSerializerRules(ARules);
+    try
+      LoadFromObject(AObject);
+    finally
+      GlobSerializerRules:=PreviousRules;
+    end;
+  finally
+    GlobRulesLock.Leave;
+  end;
 end;
 
 procedure TTJAXYDocument.ReadFromString(const AValue: String);
 var
   Stream: TStringStream;
 begin
-  Stream:=TStringStream.Create(AValue);
+  TJAXYRequireValidText(AValue);
+  Stream:=TStringStream.Create(AValue, TEncoding.UTF8, False);
   try
     LoadFromStream(Stream);
   finally
@@ -1375,77 +1513,6 @@ begin
   SetRoot(Result);
 end;
 
-{$IFDEF TJAXY_USE_RTTI}
-class function TTJAXYDocument.RTTIRecordToTJAXY(const AContext: TRttiContext; const AValue: TValue): TTJAXYObject;
-var
-  RType: TRttiType;
-  Field: TRttiField;
-  V: TTJAXYValue;
-begin
-  Result:=TTJAXYObject.Create;
-  if AValue.IsEmpty then
-    Exit;
-
-  RType:=AContext.GetType(AValue.TypeInfo);
-  for Field in RType.GetFields do
-  begin
-    if NOT TJAXYRTTIIsAccessible(Field) then
-      Continue;
-    try
-      V:=TJAXYRTTISerializeValue(AContext, Field.GetValue(AValue.GetReferenceToRawData));
-      if Assigned(V) then
-        Result.Add(Field.Name, V);
-    except
-    end;
-  end;
-end;
-
-class procedure TTJAXYDocument.RTTIRecordFromTJAXY(ATargetType: PTypeInfo; ARecord: Pointer; ASource: TTJAXYObject);
-var
-  Context: TRttiContext;
-  RType: TRttiType;
-  Field: TRttiField;
-  Source: TTJAXYValue;
-  NewValue: TValue;
-begin
-  if (ATargetType = nil) OR (ARecord = nil) OR (ASource = nil) then
-    Exit;
-
-  Context:=TRttiContext.Create;
-  RType:=Context.GetType(PTypeInfo(ATargetType));
-
-  for Field in RType.GetFields do
-  begin
-    if NOT TJAXYRTTIIsAccessible(Field) then
-      Continue;
-    Source:=TJAXYRTTIGetMemberValue(ASource, Field.Name);
-    if Source = nil then
-      Continue;
-    try
-      if (Field.FieldType.TypeKind = tkDynArray) AND (Source IS TTJAXYArray) then
-      begin
-        NewValue:=TJAXYRTTITJAXYToValue(Context, Field.FieldType, Source);
-        if NOT NewValue.IsEmpty then
-          Field.SetValue(ARecord, NewValue);
-      end
-      else if (Field.FieldType.TypeKind = tkArray) AND (Source IS TTJAXYArray) then
-      begin
-        NewValue:=Field.GetValue(ARecord);
-        TJAXYRTTIDeserializeArrayToValue(Context, Field.FieldType, NewValue, Source.AsArray);
-        Field.SetValue(ARecord, NewValue);
-      end
-      else
-      begin
-        NewValue:=TJAXYRTTITJAXYToValue(Context, Field.FieldType, Source);
-        if NOT NewValue.IsEmpty then
-          Field.SetValue(ARecord, NewValue);
-      end;
-    except
-    end;
-  end;
-end;
-{$ENDIF}
-
 procedure TTJAXYDocument.SaveToFile(const AFileName: String);
 begin
   WriteToFile(AFileName);
@@ -1456,8 +1523,7 @@ var
   S: String;
 begin
   S:=WriteToString;
-  if S <> '' then
-    AStream.WriteBuffer(Pointer(S)^, Length(S) * SizeOf(Char));
+  TJAXYWriteUTF8(AStream, S);
 end;
 
 procedure TTJAXYDocument.SetRoot(AValue: TTJAXYValue);
@@ -1474,7 +1540,14 @@ end;
 
 class procedure TTJAXYDocument.SetSerializerRules(const AValue: TTJAXYSerializerRules);
 begin
-  GlobSerializerRules:=AValue;
+  if ThreadMappingDepth > 0 then
+    raise ETJAXYException.Create('Serializer rules cannot change during a mapping operation');
+  GlobRulesLock.Enter;
+  try
+    GlobSerializerRules:=TJAXYCloneSerializerRules(AValue);
+  finally
+    GlobRulesLock.Leave;
+  end;
 end;
 
 function TTJAXYDocument.WriteToFile(const AFileName: String; AWriteMode: TTJAXYStringWriteMode): String;
@@ -1484,8 +1557,7 @@ begin
   Result:=WriteToString(AWriteMode);
   Stream:=TFileStream.Create(AFileName, fmCreate);
   try
-    if Result <> '' then
-      Stream.WriteBuffer(Pointer(Result)^, Length(Result) * SizeOf(Char));
+    TJAXYWriteUTF8(Stream, Result);
   finally
     Stream.Free;
   end;
@@ -3009,10 +3081,16 @@ begin
 end;
 
 initialization
+  GlobRulesLock:=TCriticalSection.Create;
   GlobTemplates:=TTJAXYTemplatesList.Create;
   GlobSerializerRules:=TTJAXYDocument.DefaultSerializerRules;
+  {$IFDEF TJAXY_USE_RTTI}
+  GlobMapper:=TTJAXYDefaultMapper.Create;
+  {$ENDIF}
 
 finalization
+  GlobMapper:=nil;
   FreeAndNil(GlobTemplates);
+  FreeAndNil(GlobRulesLock);
 
 end.

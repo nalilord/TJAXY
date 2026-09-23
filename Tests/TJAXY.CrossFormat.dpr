@@ -4,6 +4,8 @@ program TJAXYCrossFormat;
 
 uses
   System.SysUtils,
+  System.Classes,
+  System.IOUtils,
   TJAXY.Core,
   TJAXY.Avro,
   TJAXY.JSON,
@@ -11,12 +13,187 @@ uses
   TJAXY.YAML,
   TJAXY.XML;
 
+type
+  TShortReadStream = class(TStream)
+  private
+    FBytes: TBytes;
+    FPosition: Integer;
+  public
+    constructor Create(const ABytes: TBytes);
+    function Read(var Buffer; Count: Longint): Longint; override;
+    function Write(const Buffer; Count: Longint): Longint; override;
+    function Seek(const Offset: Int64; Origin: TSeekOrigin): Int64; override;
+  end;
+
+constructor TShortReadStream.Create(const ABytes: TBytes);
+begin
+  inherited Create;
+  FBytes:=ABytes;
+end;
+
+function TShortReadStream.Read(var Buffer; Count: Longint): Longint;
+begin
+  Result:=Length(FBytes) - FPosition;
+  if Result > Count then Result:=Count;
+  if Result > 2 then Result:=2;
+  if Result > 0 then
+  begin
+    Move(FBytes[FPosition], Buffer, Result);
+    Inc(FPosition, Result);
+  end;
+end;
+
+function TShortReadStream.Write(const Buffer; Count: Longint): Longint;
+begin
+  raise Exception.Create('Read-only test stream');
+end;
+
+function TShortReadStream.Seek(const Offset: Int64; Origin: TSeekOrigin): Int64;
+begin
+  raise Exception.Create('Non-seekable test stream');
+end;
+
 procedure Expect(ACondition: Boolean; const AMessage: String);
 begin
   if ACondition then
     Writeln('[PASS] ', AMessage)
   else
     raise Exception.Create(AMessage);
+end;
+
+procedure ExpectUTF8Bytes(AParser: TTJAXYParser; const AName: String);
+var
+  Stream, Input: TMemoryStream;
+  ShortInput: TShortReadStream;
+  Expected, Actual: TBytes;
+  I: Integer;
+  TextBefore: String;
+  FileName, WrittenText: String;
+  Prefix: array[0..2] of Byte;
+begin
+  Stream:=TMemoryStream.Create;
+  try
+    TextBefore:=AParser.WriteToString;
+    AParser.SaveToStream(Stream);
+    Expected:=TEncoding.UTF8.GetBytes(TextBefore);
+    Expect(Stream.Size = Length(Expected), AName + ' UTF-8 byte count');
+    SetLength(Actual, Stream.Size);
+    Stream.Position:=0;
+    if Stream.Size > 0 then
+      Stream.ReadBuffer(Actual[0], Stream.Size);
+    for I:=0 to High(Expected) do
+      if Actual[I] <> Expected[I] then
+        raise Exception.Create(AName + ' UTF-8 byte mismatch at ' + IntToStr(I));
+    Expect(True, AName + ' emits exact UTF-8 bytes');
+    FileName:=TPath.GetTempFileName;
+    try
+      AParser.SaveToFile(FileName);
+      Actual:=TFile.ReadAllBytes(FileName);
+      Expect(Length(Actual) = Length(Expected), AName + ' SaveToFile byte count');
+      for I:=0 to High(Expected) do
+        if Actual[I] <> Expected[I] then
+          raise Exception.Create(AName + ' SaveToFile UTF-8 mismatch at ' + IntToStr(I));
+      AParser.LoadFromFile(FileName);
+      Expect(AParser.WriteToString = TextBefore, AName + ' LoadFromFile preserves Unicode');
+      WrittenText:=AParser.WriteToFile(FileName);
+      Actual:=TFile.ReadAllBytes(FileName);
+      Expected:=TEncoding.UTF8.GetBytes(WrittenText);
+      Expect(Length(Actual) = Length(Expected), AName + ' WriteToFile byte count');
+      for I:=0 to High(Expected) do
+        if Actual[I] <> Expected[I] then
+          raise Exception.Create(AName + ' WriteToFile UTF-8 mismatch at ' + IntToStr(I));
+      Expect(True, AName + ' file overloads emit UTF-8');
+    finally
+      TFile.Delete(FileName);
+    end;
+    Actual:=TEncoding.UTF8.GetBytes(TextBefore);
+    Input:=TMemoryStream.Create;
+    try
+      Prefix[0]:=Ord('x'); Prefix[1]:=Ord('y'); Prefix[2]:=Ord('z');
+      Input.WriteBuffer(Prefix, Length(Prefix));
+      if Length(Actual) > 0 then
+        Input.WriteBuffer(Actual[0], Length(Actual));
+      Input.Position:=Length(Prefix);
+      AParser.LoadFromStream(Input);
+      Expect(AParser.WriteToString = TextBefore, AName + ' reads UTF-8 from current stream position');
+
+      Input.Clear;
+      Prefix[0]:=$EF; Prefix[1]:=$BB; Prefix[2]:=$BF;
+      Input.WriteBuffer(Prefix, Length(Prefix));
+      if Length(Actual) > 0 then
+        Input.WriteBuffer(Actual[0], Length(Actual));
+      Input.Position:=0;
+      AParser.LoadFromStream(Input);
+      Expect(AParser.WriteToString = TextBefore, AName + ' accepts one leading UTF-8 BOM');
+
+      ShortInput:=TShortReadStream.Create(Actual);
+      try
+        AParser.LoadFromStream(ShortInput);
+        Expect(AParser.WriteToString = TextBefore, AName + ' reads short non-seekable chunks');
+      finally
+        ShortInput.Free;
+      end;
+
+      Input.Clear;
+      Prefix[0]:=$C0; Prefix[1]:=$AF;
+      Input.WriteBuffer(Prefix, 2);
+      Input.Position:=0;
+      try
+        AParser.LoadFromStream(Input);
+        raise Exception.Create(AName + ' accepted malformed UTF-8');
+      except
+        on ETJAXYException do Expect(True, AName + ' rejects malformed UTF-8');
+      end;
+    finally
+      Input.Free;
+    end;
+  finally
+    Stream.Free;
+  end;
+end;
+
+procedure TestTextStreamEncoding;
+var
+  Parser: TTJAXYParser;
+  Stream: TMemoryStream;
+const
+  UnicodeValue = #$20AC + #$4E2D + #$D83D + #$DE00;
+begin
+  Parser:=TJSON.FromString('{"name":"' + UnicodeValue + '"}');
+  try ExpectUTF8Bytes(Parser, 'JSON'); finally Parser.Free; end;
+  Parser:=TYAML.FromString('name: "' + UnicodeValue + '"', yeYAML);
+  try ExpectUTF8Bytes(Parser, 'YAML'); finally Parser.Free; end;
+  Parser:=TTOML.FromString('name = "' + UnicodeValue + '"');
+  try ExpectUTF8Bytes(Parser, 'TOML'); finally Parser.Free; end;
+  Parser:=TXML.FromString('<name>' + #$20AC + #$4E2D + '</name>');
+  try ExpectUTF8Bytes(Parser, 'XML'); finally Parser.Free; end;
+  Parser:=TAvro.CreateFromString('"' + UnicodeValue + '"', '"string"');
+  try ExpectUTF8Bytes(Parser, 'Avro JSON'); finally Parser.Free; end;
+  Stream:=TMemoryStream.Create;
+  try
+    try
+      TJAXYWriteUTF8(Stream, #$D800);
+      raise Exception.Create('Unpaired UTF-16 surrogate was emitted');
+    except
+      on ETJAXYException do Expect(True, 'UTF-8 writer rejects an unpaired UTF-16 surrogate');
+    end;
+  finally
+    Stream.Free;
+  end;
+  try
+    Parser:=TJSON.FromString('{"name":"' + #$D800 + '"}');
+    Parser.Free;
+    raise Exception.Create('JSON string input accepted an unpaired UTF-16 surrogate');
+  except
+    on ETJAXYException do Expect(True, 'JSON string input rejects an unpaired UTF-16 surrogate');
+  end;
+  try
+    Parser:=TYAML.FromConfigurationString('name: "' + #$D800 + '"');
+    Parser.Free;
+    raise Exception.Create('YAML configuration input accepted an unpaired UTF-16 surrogate');
+  except
+    on ETJAXYException do Expect(True, 'YAML configuration input rejects an unpaired UTF-16 surrogate');
+  end;
 end;
 
 procedure TestJSONAndYAMLSharedShape;
@@ -133,6 +310,7 @@ begin
     TestXMLSharedShape;
     TestAvroSharedShape;
     TestAssignBetweenDocuments;
+    TestTextStreamEncoding;
   except
     on E: Exception do
     begin

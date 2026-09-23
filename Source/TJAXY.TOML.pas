@@ -316,6 +316,7 @@ type
   private
     FLines: TStringList;
     FDefinedTables: TStringList;
+    FArrayTablePaths: TStringList;
     FRoot: TTJAXYObject;
     FCurrent: TTJAXYObject;
     function ParseArray(const AValue: String): TTJAXYArray;
@@ -353,6 +354,7 @@ begin
   FLines:=TStringList.Create;
   FLines.Text:=StringReplace(AText, #13#10, #10, [rfReplaceAll]);
   FDefinedTables:=TStringList.Create;
+  FArrayTablePaths:=TStringList.Create;
   FRoot:=TTJAXYObject.Create;
   FCurrent:=FRoot;
 end;
@@ -360,6 +362,7 @@ end;
 destructor TTOMLParser.Destroy;
 begin
   FDefinedTables.Free;
+  FArrayTablePaths.Free;
   FLines.Free;
   inherited;
 end;
@@ -533,35 +536,50 @@ function TTOMLParser.ParseKeyPath(const AValue: String): TStringList;
 var
   I, Start: Integer;
   Part: String;
+  Quoted: Boolean;
 begin
   Result:=TStringList.Create;
-  I:=1;
-  while I <= Length(AValue) do
-  begin
-    while (I <= Length(AValue)) AND CharInSet(AValue[I], [' ', #9]) do
-      Inc(I);
-    if I > Length(AValue) then
-      Break;
-    if CharInSet(AValue[I], ['"', '''']) then
-      Part:=ParseString(AValue, I)
-    else
+  try
+    I:=1;
+    while I <= Length(AValue) do
     begin
-      Start:=I;
-      while (I <= Length(AValue)) AND (AValue[I] <> '.') do
+      while (I <= Length(AValue)) AND CharInSet(AValue[I], [' ', #9]) do
         Inc(I);
-      Part:=Trim(Copy(AValue, Start, I - Start));
+      if I > Length(AValue) then
+        Break;
+      Quoted:=CharInSet(AValue[I], ['"', '''']);
+      if Quoted then
+      begin
+        if TOMLStartsWithAt(AValue, StringOfChar(AValue[I], 3), I) then
+          raise ETOMLException.Create('Multiline strings are invalid TOML keys');
+        Part:=ParseString(AValue, I);
+      end
+      else
+      begin
+        Start:=I;
+        while (I <= Length(AValue)) AND CharInSet(AValue[I], ['A'..'Z', 'a'..'z', '0'..'9', '_', '-']) do
+          Inc(I);
+        Part:=Copy(AValue, Start, I - Start);
+        if Part = '' then
+          raise ETOMLException.Create('Invalid TOML key');
+      end;
+      Result.Add(Part);
+      while (I <= Length(AValue)) AND CharInSet(AValue[I], [' ', #9]) do
+        Inc(I);
+      if I <= Length(AValue) then
+      begin
+        if AValue[I] <> '.' then
+          raise ETOMLException.Create('Invalid TOML dotted key');
+        Inc(I);
+        while (I <= Length(AValue)) AND CharInSet(AValue[I], [' ', #9]) do
+          Inc(I);
+        if I > Length(AValue) then
+          raise ETOMLException.Create('Invalid TOML dotted key');
+      end;
     end;
-    if Part = '' then
-      raise ETOMLException.Create('Invalid TOML key');
-    Result.Add(Part);
-    while (I <= Length(AValue)) AND CharInSet(AValue[I], [' ', #9]) do
-      Inc(I);
-    if I <= Length(AValue) then
-    begin
-      if AValue[I] <> '.' then
-        raise ETOMLException.Create('Invalid TOML dotted key');
-      Inc(I);
-    end;
+  except
+    Result.Free;
+    raise;
   end;
 end;
 
@@ -902,6 +920,7 @@ var
   Obj: TTJAXYObject;
   Arr: TTJAXYArray;
   I: Integer;
+  TableIdentity: String;
 begin
   IsArrayTable:=Copy(ALine, 1, 2) = '[[';
   if IsArrayTable then
@@ -920,28 +939,37 @@ begin
       Key:=Parts[I];
       if Obj.HasKey(Key) then
       begin
-        if NOT Obj[Key].IsObject then
+        if Obj[Key].IsObject then
+          Obj:=Obj[Key].AsObject
+        else if Obj[Key].IsArray AND
+          (FArrayTablePaths.IndexOf(IntToHex(NativeUInt(Obj), SizeOf(Pointer) * 2) + ':' + Key) >= 0) AND
+          (Obj[Key].AsArray.Count > 0) then
+          Obj:=Obj[Key].AsArray[Obj[Key].AsArray.Count - 1].AsObject
+        else
           raise ETOMLException.CreateFmt('TOML key "%s" is not a table', [Key]);
-        Obj:=Obj[Key].AsObject;
       end
       else
         Obj:=Obj.AddObject(Key);
     end;
 
     Key:=Parts[Parts.Count - 1];
+    TableIdentity:=IntToHex(NativeUInt(Obj), SizeOf(Pointer) * 2) + ':' + Key;
     if IsArrayTable then
     begin
-      if Obj.HasKey(Key) AND Obj[Key].IsArray then
+      if Obj.HasKey(Key) AND Obj[Key].IsArray AND (FArrayTablePaths.IndexOf(TableIdentity) >= 0) then
         Arr:=Obj[Key].AsArray
       else if Obj.HasKey(Key) then
         raise ETOMLException.CreateFmt('TOML key "%s" is not an array of tables', [Key])
       else
+      begin
         Arr:=Obj.AddArray(Key);
+        FArrayTablePaths.Add(TableIdentity);
+      end;
       FCurrent:=Arr.AddObject;
     end
     else
     begin
-      if FDefinedTables.IndexOf(Path) >= 0 then
+      if FDefinedTables.IndexOf(TableIdentity) >= 0 then
         raise ETOMLException.CreateFmt('Duplicate TOML table "%s"', [Path]);
       if Obj.HasKey(Key) then
       begin
@@ -951,7 +979,7 @@ begin
       end
       else
         FCurrent:=Obj.AddObject(Key);
-      FDefinedTables.Add(Path);
+      FDefinedTables.Add(TableIdentity);
     end;
   finally
     Parts.Free;
@@ -1228,16 +1256,14 @@ end;
 
 procedure TTOML.LoadFromStream(AStream: TStream);
 begin
-  FData.Clear;
-  FData.CopyFrom(AStream, 0);
-  FData.Position:=0;
-  ReadFromString(FData.DataString);
+  ReadFromString(TJAXYReadUTF8(AStream));
 end;
 
 procedure TTOML.ReadFromString(const AValue: String);
 var
   Parser: TTOMLParser;
 begin
+  TJAXYRequireValidText(AValue);
   FData.Clear;
   FData.WriteString(AValue);
   FData.Position:=0;
@@ -1259,8 +1285,7 @@ var
   S: String;
 begin
   S:=WriteToString;
-  if S <> '' then
-    AStream.WriteBuffer(Pointer(S)^, Length(S) * SizeOf(Char));
+  TJAXYWriteUTF8(AStream, S);
 end;
 
 function TTOML.WriteToFile(const AFileName: String; AWriteMode: TTOMLStringWriteMode): String;
@@ -1270,8 +1295,7 @@ begin
   Result:=WriteToString(AWriteMode);
   Stream:=TFileStream.Create(AFileName, fmCreate);
   try
-    if Result <> '' then
-      Stream.WriteBuffer(Pointer(Result)^, Length(Result) * SizeOf(Char));
+    TJAXYWriteUTF8(Stream, Result);
   finally
     Stream.Free;
   end;

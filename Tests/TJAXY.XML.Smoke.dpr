@@ -136,6 +136,18 @@ begin
   ExpectFails('<root><!-- bad -- comment --></root>', 'invalid comment fails');
   ExpectFails('<root><? ?></root>', 'invalid processing instruction fails');
 
+  XML:=nil;
+  try
+    try
+      XML:=TXML.CreateFromString('<a:x xmlns:a="urn:a" xmlns:b="urn:b"></b:x>', xnmStripPrefixes);
+      raise Exception.Create('mismatched qualified close tag: expected XML rejection');
+    except
+      on EXMLException do Writeln('[PASS] mismatched qualified close tag fails when stripping prefixes');
+    end;
+  finally
+    XML.Free;
+  end;
+
   XML:=TXML.CreateObjectRoot;
   try
     XML.AsObject.Add('bad name', 'value');

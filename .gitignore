@@ -1,4 +1,5 @@
 Bin/
+Reports/
 Tests/xmlconf/
 *.dcu
 *.dcp

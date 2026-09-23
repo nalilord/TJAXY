@@ -82,6 +82,114 @@ begin
   end;
 end;
 
+function BuildContainerBlock(const ASchema: String; ARecordCount, ADeclaredSize: Int64;
+  const APayload: TBytes): TMemoryStream;
+var
+  Sync, SchemaBytes, KeyBytes: TBytes;
+  I: Integer;
+
+  procedure WriteLong(AValue: Int64);
+  var
+    N: UInt64;
+    B: Byte;
+  begin
+    N:=UInt64((AValue shl 1) xor (AValue shr 63));
+    while (N AND not UInt64($7F)) <> 0 do
+    begin
+      B:=Byte((N AND $7F) OR $80);
+      Result.WriteBuffer(B, 1);
+      N:=N shr 7;
+    end;
+    B:=Byte(N);
+    Result.WriteBuffer(B, 1);
+  end;
+
+begin
+  Result:=TMemoryStream.Create;
+  try
+    SchemaBytes:=TEncoding.UTF8.GetBytes(ASchema);
+    KeyBytes:=TEncoding.UTF8.GetBytes('avro.schema');
+    SetLength(Sync, 16);
+    for I:=0 to High(Sync) do
+      Sync[I]:=I;
+    Result.WriteBuffer(TBytes.Create(Ord('O'), Ord('b'), Ord('j'), 1)[0], 4);
+    WriteLong(1);
+    WriteLong(Length(KeyBytes));
+    Result.WriteBuffer(KeyBytes[0], Length(KeyBytes));
+    WriteLong(Length(SchemaBytes));
+    Result.WriteBuffer(SchemaBytes[0], Length(SchemaBytes));
+    WriteLong(0);
+    Result.WriteBuffer(Sync[0], Length(Sync));
+    WriteLong(ARecordCount);
+    WriteLong(ADeclaredSize);
+    if Length(APayload) > 0 then
+      Result.WriteBuffer(APayload[0], Length(APayload));
+    Result.WriteBuffer(Sync[0], Length(Sync));
+    Result.Position:=0;
+  except
+    Result.Free;
+    raise;
+  end;
+end;
+
+procedure TestMalformedContainerBlocks;
+var
+  Target: TAvro;
+  Stream: TMemoryStream;
+  I: Integer;
+
+  procedure ExpectBlockFails(ARecordCount, ADeclaredSize: Int64;
+    const APayload: TBytes; const AName: String);
+  begin
+    Stream:=BuildContainerBlock('"null"', ARecordCount, ADeclaredSize, APayload);
+    Target:=TAvro.Create;
+    try
+      try
+        Target.LoadContainerFromStream(Stream);
+        raise Exception.Create(AName + ': expected Avro validation failure');
+      except
+        on E: EAvroException do Writeln('[PASS] ', AName);
+      end;
+    finally
+      Target.Free;
+      Stream.Free;
+    end;
+  end;
+
+begin
+  Stream:=BuildContainerBlock('"null"', 3, 0, nil);
+  Target:=TAvro.Create;
+  try
+    Target.LoadContainerFromStream(Stream);
+    Expect(Target.Root.IsArray AND (Target.Root.AsArray.Count = 3),
+      'three zero-byte null records follow declared count');
+    for I:=0 to 2 do
+      Expect(Target.Root.AsArray[I].IsNull, 'zero-byte null record ' + IntToStr(I));
+  finally
+    Target.Free;
+    Stream.Free;
+  end;
+  Stream:=BuildContainerBlock('"null"', 3, 0, nil);
+  Target:=TAvro.Create;
+  try
+    Target.MaxContainerRecords:=2;
+    try
+      Target.LoadContainerFromStream(Stream);
+      raise Exception.Create('configured container record limit should fail');
+    except
+      on E: EAvroException do Writeln('[PASS] configured container record limit rejected');
+    end;
+  finally
+    Target.Free;
+    Stream.Free;
+  end;
+  ExpectBlockFails(0, 0, nil, 'zero container block count rejected');
+  ExpectBlockFails(1000001, 0, nil, 'container record count bound rejects zero-byte amplification');
+  ExpectBlockFails(2, 1, TBytes.Create(42), 'zero-byte record block rejects excess payload');
+  ExpectBlockFails(1, 1, nil, 'truncated container block rejected');
+  ExpectBlockFails(1, -1, nil, 'negative container block size rejected');
+end;
+
 procedure TestRead;
 var
   Avro: TAvro;
@@ -294,6 +402,38 @@ begin
   end;
 end;
 
+procedure TestMalformedLongEncoding;
+var
+  Target: TAvro;
+  Payload: TBytes;
+  I: Integer;
+begin
+  Target:=TAvro.CreateFromSchemaString('"long"');
+  try
+    SetLength(Payload, 10);
+    for I:=0 to 8 do
+      Payload[I]:=$80;
+    Payload[9]:=$02;
+    try
+      Target.LoadFromBinaryBytes(Payload);
+      raise Exception.Create('malformed Avro long fails: expected validation error');
+    except
+      on E: EAvroException do
+        Writeln('[PASS] malformed Avro long fails');
+    end;
+    Payload[9]:=$80;
+    try
+      Target.LoadFromBinaryBytes(Payload);
+      raise Exception.Create('unterminated Avro long fails: expected validation error');
+    except
+      on E: EAvroException do
+        Writeln('[PASS] unterminated Avro long fails');
+    end;
+  finally
+    Target.Free;
+  end;
+end;
+
 procedure TestSingleObjectRoundTrip;
 var
   Source, Target: TAvro;
@@ -355,6 +495,29 @@ begin
     try
       Target.LoadContainerFromStream(Stream);
       Expect(Target.Root.AsObject['title'].AsString = 'hello', 'deflate container reader record string');
+    finally
+      Target.Free;
+    end;
+  finally
+    Stream.Free;
+    Source.Free;
+  end;
+end;
+
+procedure TestZeroByteContainerRecord;
+var
+  Source, Target: TAvro;
+  Stream: TMemoryStream;
+begin
+  Source:=TAvro.CreateFromString('null', '"null"');
+  Stream:=TMemoryStream.Create;
+  try
+    Source.SaveContainerToStream(Stream);
+    Stream.Position:=0;
+    Target:=TAvro.Create;
+    try
+      Target.LoadContainerFromStream(Stream);
+      Expect(Target.Root.IsNull, 'null container record consumes zero bytes');
     finally
       Target.Free;
     end;
@@ -597,9 +760,12 @@ begin
     TestAliases;
     TestCanonicalAndFingerprint;
     TestBinaryRoundTrip;
+    TestMalformedLongEncoding;
     TestSingleObjectRoundTrip;
     TestContainerRoundTrip;
     TestDeflateContainerRoundTrip;
+    TestZeroByteContainerRecord;
+    TestMalformedContainerBlocks;
     TestContainerMultiBlockRead;
     TestContainerInvalidBlockCount;
     TestReaderWriterResolution;

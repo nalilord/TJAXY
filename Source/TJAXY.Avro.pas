@@ -99,6 +99,8 @@ type
     FContainerCodec: String;
     FSchema: TAvroSchema;
     FSchemaJSON: String;
+    FMaxContainerRecords: Integer;
+    procedure SetMaxContainerRecords(AValue: Integer);
     procedure SetSchema(AValue: TAvroSchema);
   protected
     function ReadValue(AValue: TTJAXYValue; ASchema: TAvroSchema; const APath: String): TTJAXYValue;
@@ -145,10 +147,14 @@ type
     procedure SaveContainerToFile(const AFileName: String);
     function WriteToString(AWriteMode: TTJAXYStringWriteMode = tjaxywmReadable): String; override;
     property ContainerCodec: String read FContainerCodec write FContainerCodec;
+    property MaxContainerRecords: Integer read FMaxContainerRecords write SetMaxContainerRecords;
     property Schema: TAvroSchema read FSchema write SetSchema;
   end;
 
 implementation
+
+const
+  AVRO_MAX_CONTAINER_BLOCK_RECORDS = 1000000;
 
 resourcestring
   RCS_SCHEMA_REQUIRED = 'Avro schema is required';
@@ -291,18 +297,26 @@ end;
 
 function AvroReadLong(AStream: TStream): Int64;
 var
-  Shift: Integer;
+  Index: Integer;
   B: Byte;
   N: UInt64;
 begin
-  Shift:=0;
   N:=0;
-  repeat
+  for Index:=0 to 9 do
+  begin
     B:=AvroReadByte(AStream);
-    N:=N OR (UInt64(B AND $7F) shl Shift);
-    Inc(Shift, 7);
-  until (B AND $80) = 0;
-  Result:=Int64((N shr 1) xor UInt64(-Int64(N AND 1)));
+    if (Index = 9) AND ((B AND $FE) <> 0) then
+      raise EAvroException.Create('Invalid Avro long encoding');
+    N:=N OR (UInt64(B AND $7F) shl (Index * 7));
+    if (B AND $80) = 0 then
+      Break;
+  end;
+  if (B AND $80) <> 0 then
+    raise EAvroException.Create('Invalid Avro long encoding');
+  if (N AND 1) <> 0 then
+    Result:=-Int64(N shr 1) - 1
+  else
+    Result:=Int64(N shr 1);
 end;
 
 procedure AvroWriteRawBytes(AStream: TStream; const AValue: TBytes);
@@ -311,11 +325,13 @@ begin
     AStream.WriteBuffer(AValue[0], Length(AValue));
 end;
 
-function AvroReadRawBytes(AStream: TStream; ACount: Integer): TBytes;
+function AvroReadRawBytes(AStream: TStream; ACount: Int64): TBytes;
 begin
-  SetLength(Result, ACount);
+  if (ACount < 0) OR (ACount > MaxInt) then
+    raise EAvroException.Create('Invalid Avro byte length');
+  SetLength(Result, Integer(ACount));
   if ACount > 0 then
-    if AStream.Read(Result[0], ACount) <> ACount then
+    if AStream.Read(Result[0], Integer(ACount)) <> ACount then
       raise EAvroException.Create(RCS_BINARY_EOF);
 end;
 
@@ -710,7 +726,7 @@ begin
   Source:=TBytesStream.Create(ABytes);
   Dest:=TBytesStream.Create;
   try
-    Compressor:=TCompressionStream.Create(clDefault, Dest);
+    Compressor:=TCompressionStream.Create(Dest, zcDefault, -15);
     try
       Compressor.CopyFrom(Source, 0);
     finally
@@ -732,7 +748,7 @@ begin
   Source:=TBytesStream.Create(ABytes);
   Dest:=TBytesStream.Create;
   try
-    Decompressor:=TDecompressionStream.Create(Source);
+    Decompressor:=TDecompressionStream.Create(Source, -15);
     try
       Dest.CopyFrom(Decompressor, 0);
     finally
@@ -1230,7 +1246,15 @@ constructor TAvro.Create;
 begin
   inherited Create;
   FContainerCodec:='null';
+  FMaxContainerRecords:=AVRO_MAX_CONTAINER_BLOCK_RECORDS;
   FData:=TStringStream.Create('', TEncoding.UTF8, False);
+end;
+
+procedure TAvro.SetMaxContainerRecords(AValue: Integer);
+begin
+  if AValue <= 0 then
+    raise EAvroException.Create('MaxContainerRecords must be positive');
+  FMaxContainerRecords:=AValue;
 end;
 
 constructor TAvro.Create(ASchema: TAvroSchema);
@@ -1306,16 +1330,14 @@ end;
 
 procedure TAvro.LoadFromStream(AStream: TStream);
 begin
-  FData.Clear;
-  FData.CopyFrom(AStream, 0);
-  FData.Position:=0;
-  LoadFromString(FData.DataString);
+  LoadFromString(TJAXYReadUTF8(AStream));
 end;
 
 procedure TAvro.LoadFromString(const AValueJSON: String);
 var
   JSON: TJSON;
 begin
+  TJAXYRequireValidText(AValueJSON);
   if FSchema = nil then
     raise EAvroException.Create(RCS_SCHEMA_REQUIRED);
 
@@ -1453,6 +1475,8 @@ begin
   begin
     if MetaCount < 0 then
     begin
+      if MetaCount = Low(Int64) then
+        raise EAvroException.CreateFmt(RCS_INVALID_SCHEMA, ['container.meta.count']);
       MetaCount:=-MetaCount;
       MetaBlockSize:=AvroReadLong(AStream);
       if MetaBlockSize < 0 then
@@ -1470,7 +1494,7 @@ begin
       Value:=AvroUTF8String(AvroReadRawBytes(AStream, ValueLen));
       if Key = 'avro.schema' then
       begin
-        WriterSchema.Free;
+        FreeAndNil(WriterSchema);
         WriterSchema:=TAvroSchema.FromString(Value);
         FSchemaJSON:=Value;
       end
@@ -1493,10 +1517,9 @@ begin
     while AStream.Position < AStream.Size do
     begin
       BlockCount:=AvroReadLong(AStream);
-      if BlockCount < 0 then
+      if (BlockCount <= 0) OR
+        (BlockCount > FMaxContainerRecords - RootArray.Count) then
         raise EAvroException.CreateFmt(RCS_INVALID_SCHEMA, ['container.block.count']);
-      if BlockCount = 0 then
-        Break;
       BlockSize:=AvroReadLong(AStream);
       if (BlockSize < 0) OR (BlockSize > MaxInt) then
         raise EAvroException.CreateFmt(RCS_INVALID_SCHEMA, ['container.block.size']);
@@ -1511,7 +1534,7 @@ begin
           raise EAvroException.CreateFmt(RCS_INVALID_SCHEMA, ['container.sync']);
       BlockStream:=TBytesStream.Create(Block);
       try
-        while (BlockCount > 0) AND (BlockStream.Position < BlockStream.Size) do
+        while BlockCount > 0 do
         begin
           Item:=ReadBinaryValue(BlockStream, WriterSchema, '$');
           try
@@ -1711,8 +1734,7 @@ var
   S: String;
 begin
   S:=WriteToString;
-  if S <> '' then
-    AStream.WriteBuffer(Pointer(S)^, Length(S) * SizeOf(Char));
+  TJAXYWriteUTF8(AStream, S);
 end;
 
 procedure TAvro.SaveToBinaryStream(AStream: TStream);
@@ -1849,6 +1871,7 @@ var
   BranchIndex: Int64;
   SingleValue: Single;
   DoubleValue: Double;
+  MapKey: String;
 begin
   ASchema:=AvroSchemaResolve(ASchema);
   if ASchema = nil then
@@ -1950,7 +1973,8 @@ begin
             for I:=0 to BlockCount - 1 do
             begin
               Count:=AvroReadLong(AStream);
-              Obj.Add(AvroUTF8String(AvroReadRawBytes(AStream, Count)), ReadBinaryValue(AStream, ASchema.Values, APath + '{}'));
+              MapKey:=AvroUTF8String(AvroReadRawBytes(AStream, Count));
+              Obj.Add(MapKey, ReadBinaryValue(AStream, ASchema.Values, APath + '{}'));
             end;
             BlockCount:=AvroReadLong(AStream);
           end;
