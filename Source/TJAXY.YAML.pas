@@ -50,6 +50,7 @@ type
     FData: TStringStream;
     FDocuments: TList;
     FEncoding: TYAMLEncoding;
+    FConfigurationProfile: Boolean;
     FRoot: TYAMLValue;
     FWriteDocumentMarker: Boolean;
     function GetIsObject: Boolean;
@@ -76,6 +77,8 @@ type
     class function FromString(AValue: String; AEncoding: TYAMLEncoding = yeKYAML): TYAML; static;
     class function FromFile(AFile: String; AEncoding: TYAMLEncoding = yeKYAML): TYAML; static;
     class function FromStream(AStream: TStream; AEncoding: TYAMLEncoding = yeKYAML): TYAML; static;
+    class function FromConfigurationString(const AValue: String): TYAML; static;
+    class function FromConfigurationFile(const AFile: String): TYAML; static;
     constructor Create; override;
     constructor CreateFromObject(AObject: TObject); override;
     {$IFNDEF FPC}
@@ -335,6 +338,58 @@ implementation
 uses
   Math;
 
+function YAMLValidUTF8(const ABytes: TBytes): Boolean;
+var
+  I, J, Continuations: Integer;
+  First, SecondMinimum, SecondMaximum: Byte;
+begin
+  Result:=False;
+  I:=0;
+  while I < Length(ABytes) do
+  begin
+    First:=ABytes[I];
+    if First = 0 then
+      Exit;
+    if First < $80 then
+    begin
+      Inc(I);
+      Continue;
+    end;
+
+    SecondMinimum:=$80;
+    SecondMaximum:=$BF;
+    if (First >= $C2) AND (First <= $DF) then
+      Continuations:=1
+    else if (First >= $E0) AND (First <= $EF) then
+    begin
+      Continuations:=2;
+      if First = $E0 then
+        SecondMinimum:=$A0;
+      if First = $ED then
+        SecondMaximum:=$9F;
+    end else
+    if (First >= $F0) AND (First <= $F4) then
+    begin
+      Continuations:=3;
+      if First = $F0 then
+        SecondMinimum:=$90;
+      if First = $F4 then
+        SecondMaximum:=$8F;
+    end else
+      Exit;
+
+    if I + Continuations >= Length(ABytes) then
+      Exit;
+    if (ABytes[I + 1] < SecondMinimum) OR (ABytes[I + 1] > SecondMaximum) then
+      Exit;
+    for J:=2 to Continuations do
+      if (ABytes[I + J] < $80) OR (ABytes[I + J] > $BF) then
+        Exit;
+    Inc(I, Continuations + 1);
+  end;
+  Result:=True;
+end;
+
 resourcestring
   RCS_KYAML_PARSER_EXCEPTION = 'KYAML Parser Exception at Line: %d Col: %d: %s';
   RCS_INVALID_VALUE_CAST = 'Invalid KYAML value cast';
@@ -509,6 +564,10 @@ type
     FLine: Integer;
     FColumn: Integer;
     FStrictKYAML: Boolean;
+    FConfigurationProfile: Boolean;
+    FDepth: Integer;
+    FNodes: Integer;
+    FMaxDepth: Integer;
     function Current: Char;
     function Peek(AOffset: Integer = 1): Char;
     function Eof: Boolean;
@@ -529,7 +588,8 @@ type
     procedure SkipWhite;
     procedure ParseDocumentMarker;
   public
-    constructor Create(AText: String; AStrictKYAML: Boolean = True);
+    constructor Create(AText: String; AStrictKYAML: Boolean = True; AConfigurationProfile: Boolean = False; AMaxDepth: Integer = 32);
+    property ParsedNodes: Integer read FNodes;
     function Parse: TYAMLValue;
     function ParseValue: TYAMLValue;
     function ParseObject: TYAMLObject;
@@ -542,6 +602,10 @@ type
     FLines: TStringList;
     FAnchors: TStringList;
     FIndex: Integer;
+    FConfigurationProfile: Boolean;
+    FDepth: Integer;
+    FNodes: Integer;
+    FEntries: Integer;
     function AliasValue(const AName: String; ALineNo, AColumn: Integer): TYAMLValue;
     function CurrentLine: String;
     function CurrentLineNo: Integer;
@@ -571,7 +635,7 @@ type
     procedure SkipIgnorable;
     procedure ParseObjectInto(AObject: TYAMLObject; AIndent: Integer);
   public
-    constructor Create(AText: String);
+    constructor Create(AText: String; AConfigurationProfile: Boolean = False);
     destructor Destroy; override;
     function Parse: TYAMLValue;
     function ParseNode(AIndent: Integer): TYAMLValue;
@@ -851,6 +915,32 @@ begin
   end;
 end;
 
+class function TYAML.FromConfigurationString(const AValue: String): TYAML;
+begin
+  Result:=TYAML.Create;
+  try
+    Result.FEncoding:=yeYAML;
+    Result.FConfigurationProfile:=True;
+    Result.ReadFromString(AValue);
+  except
+    Result.Free;
+    raise;
+  end;
+end;
+
+class function TYAML.FromConfigurationFile(const AFile: String): TYAML;
+begin
+  Result:=TYAML.Create;
+  try
+    Result.FEncoding:=yeYAML;
+    Result.FConfigurationProfile:=True;
+    Result.LoadFromFile(AFile);
+  except
+    Result.Free;
+    raise;
+  end;
+end;
+
 constructor TYAML.CreateFromObject(AObject: TObject);
 begin
   Create;
@@ -1052,9 +1142,25 @@ begin
 end;
 
 procedure TYAML.LoadFromStream(AStream: TStream);
+var
+  Bytes: TBytes;
+  ByteCount: Integer;
 begin
   FData.Clear;
-  FData.CopyFrom(AStream, 0);
+  if FConfigurationProfile then
+  begin
+    if AStream.Size - AStream.Position > 262144 then
+      raise EYAMLException.Create('Configuration exceeds 262144 bytes', 1, 1);
+    ByteCount:=AStream.Size - AStream.Position;
+    SetLength(Bytes, ByteCount);
+    if ByteCount > 0 then
+      AStream.ReadBuffer(Bytes[0], ByteCount);
+    if NOT YAMLValidUTF8(Bytes) then
+      raise EYAMLException.Create('Configuration must be valid UTF-8 without NUL bytes', 1, 1);
+    if ByteCount > 0 then
+      FData.WriteBuffer(Bytes[0], ByteCount);
+  end else
+    FData.CopyFrom(AStream, 0);
   FData.Position:=0;
   Parse;
 end;
@@ -1083,9 +1189,11 @@ begin
       end;
     yeYAML:
       begin
-        BlockParser:=TYAMLBlockParser.Create(FData.DataString);
+        BlockParser:=TYAMLBlockParser.Create(FData.DataString, FConfigurationProfile);
         try
           BlockParser.ParseDocuments(FDocuments);
+          if FConfigurationProfile AND (FDocuments.Count <> 1) then
+            raise EYAMLException.Create('Configuration requires one document', 1, 1);
           if FDocuments.Count = 0 then
             FDocuments.Add(TYAMLNull.Create);
           FRoot:=TYAMLValue(FDocuments[0]);
@@ -1106,7 +1214,30 @@ begin
 end;
 
 procedure TYAML.ReadFromString(const AValue: String);
+var
+  Bytes: TBytes;
+  I: Integer;
+  {$IFNDEF FPC}
+  Encoded: UTF8String;
+  {$ENDIF}
 begin
+  if FConfigurationProfile then
+  begin
+    {$IFDEF FPC}
+    SetLength(Bytes, Length(AValue));
+    for I:=1 to Length(AValue) do
+      Bytes[I - 1]:=Ord(AValue[I]);
+    {$ELSE}
+    Encoded:=UTF8Encode(AValue);
+    SetLength(Bytes, Length(Encoded));
+    for I:=1 to Length(Encoded) do
+      Bytes[I - 1]:=Ord(Encoded[I]);
+    {$ENDIF}
+    if Length(Bytes) > 262144 then
+      raise EYAMLException.Create('Configuration exceeds 262144 bytes', 1, 1);
+    if NOT YAMLValidUTF8(Bytes) then
+      raise EYAMLException.Create('Configuration must be valid UTF-8 without NUL bytes', 1, 1);
+  end;
   FData.Clear;
   FData.WriteString(AValue);
   FData.Position:=0;
@@ -2024,7 +2155,7 @@ end;
 
 { TYAMLParser }
 
-constructor TYAMLParser.Create(AText: String; AStrictKYAML: Boolean);
+constructor TYAMLParser.Create(AText: String; AStrictKYAML: Boolean; AConfigurationProfile: Boolean; AMaxDepth: Integer);
 begin
   inherited Create;
   FText:=AText;
@@ -2032,6 +2163,8 @@ begin
   FLine:=1;
   FColumn:=1;
   FStrictKYAML:=AStrictKYAML;
+  FConfigurationProfile:=AConfigurationProfile;
+  FMaxDepth:=AMaxDepth;
 end;
 
 procedure TYAMLParser.Advance;
@@ -2052,7 +2185,7 @@ end;
 
 procedure TYAMLParser.CheckForbidden;
 begin
-  if NOT FStrictKYAML then
+  if (NOT FStrictKYAML) AND (NOT FConfigurationProfile) then
     Exit;
 
   case CharToYAML(Current) of
@@ -2232,6 +2365,13 @@ begin
       if (CharToYAML(Current) = ycRightBrace) AND NOT FStrictKYAML then
         Break;
       Key:=ParseKey;
+      if FConfigurationProfile then
+      begin
+        if Key = '<<' then
+          Error('Configuration does not allow merge keys');
+        if Result.HasKey(Key) then
+          Error(Format(RCS_DUPLICATE_KEY, [Key]));
+      end;
       SkipWhite;
       if CharToYAML(Current) = ycColon then
       begin
@@ -2272,6 +2412,15 @@ begin
   Result:=nil;
   SkipWhite;
   CheckForbidden;
+  if FConfigurationProfile then
+  begin
+    Inc(FDepth);
+    Inc(FNodes);
+    if FDepth > FMaxDepth then
+      Error('Configuration exceeds 32 nesting levels');
+    if FNodes > 10000 then
+      Error('Configuration exceeds 10000 nodes');
+  end;
 
   case CharToYAML(Current) of
     ycLeftBrace:
@@ -2325,6 +2474,8 @@ begin
     else
       Error(RCS_EXPECTED_VALUE);
   end;
+  if FConfigurationProfile then
+    Dec(FDepth);
 end;
 
 function TYAMLParser.Peek(AOffset: Integer): Char;
@@ -2343,6 +2494,8 @@ var
   Value: TYAMLValue;
 begin
   SkipWhite;
+  if FConfigurationProfile AND CharInSet(Current, ['?', '[', '{', '&', '*', '!']) then
+    Error('Configuration mapping keys must be strings');
   if Current = YAML_CHARS[ycQuestion] then
   begin
     Advance;
@@ -2408,6 +2561,14 @@ begin
   end;
 
   Result:=Trim(S);
+  if FConfigurationProfile then
+  begin
+    if Result = '' then
+      Error('Configuration mapping keys must be strings');
+    if (Result = 'null') OR (Result = 'true') OR (Result = 'false') OR CharInSet(Result[1], ['0'..'9']) OR
+      ((Result[1] = '-') AND (Length(Result) > 1) AND CharInSet(Result[2], ['0'..'9'])) then
+      Error('Configuration mapping keys must be strings');
+  end;
 end;
 
 function TYAMLParser.ReadIdentifier: String;
@@ -2782,7 +2943,7 @@ begin
     raise Exception.Create(RCS_INVALID_MERGE_VALUE);
 end;
 
-constructor TYAMLBlockParser.Create(AText: String);
+constructor TYAMLBlockParser.Create(AText: String; AConfigurationProfile: Boolean);
 begin
   inherited Create;
   FLines:=TStringList.Create;
@@ -2791,6 +2952,7 @@ begin
   FAnchors.Sorted:=False;
   FAnchors.OwnsObjects:=True;
   FIndex:=0;
+  FConfigurationProfile:=AConfigurationProfile;
   Load(AText);
 end;
 
@@ -2882,6 +3044,8 @@ begin
   begin
     if CharInSet(AValue[1], ['&', '*', '!']) then
     begin
+      if FConfigurationProfile then
+        Error('Configuration does not allow anchors, aliases, or tags', CurrentLineNo, 1);
       P:=Pos(YAML_CHARS[ycSpace], AValue);
       if P = 0 then
       begin
@@ -3286,7 +3450,10 @@ var
       HasSegmentContent:=True;
     end;
 
-    Parser:=TYAMLBlockParser.Create(Segment.Text);
+    if FConfigurationProfile AND (ADocuments.Count > 0) then
+      Error('Configuration requires one document', CurrentLineNo, 1);
+
+    Parser:=TYAMLBlockParser.Create(Segment.Text, FConfigurationProfile);
     try
       ADocuments.Add(Parser.Parse);
     finally
@@ -3333,6 +3500,8 @@ begin
 
       if (Marker <> '') AND (CharToYAML(Marker[1]) = ycPercent) then
       begin
+        if FConfigurationProfile then
+          Error('Configuration does not allow directives', Integer(NativeInt(FLines.Objects[I])), 1);
         if (NOT HasSegmentContent) AND (NOT SawMarker) AND (PendingHeader = '') then
         begin
           ValidateDirective(Marker, Integer(NativeInt(FLines.Objects[I])));
@@ -3416,6 +3585,12 @@ begin
         Break;
       if CurrentIndent > AIndent then
         Error(RCS_INVALID_YAML, CurrentLineNo, CurrentIndent + 1);
+      if FConfigurationProfile then
+      begin
+        Inc(FEntries);
+        if FEntries > 10000 then
+          Error('Configuration exceeds 10000 nodes', CurrentLineNo, CurrentIndent + 1);
+      end;
 
       Line:=RemoveComment(CurrentLine);
       LineNo:=CurrentLineNo;
@@ -3767,9 +3942,27 @@ begin
     Exit;
   end;
 
-  Parser:=TYAMLParser.Create(V, False);
+  Parser:=TYAMLParser.Create(V, False, FConfigurationProfile, 32 - FDepth);
   try
-    Result:=Parser.Parse;
+    try
+      Result:=Parser.Parse;
+    except
+      on ParseError: EYAMLException do
+      begin
+        if FConfigurationProfile then
+          raise EYAMLException.Create(ParseError.Message, ALineNo + ParseError.Line - 1, AColumn + ParseError.Column - 1);
+        raise;
+      end;
+    end;
+    if FConfigurationProfile then
+    begin
+      Inc(FNodes, Parser.ParsedNodes);
+      if FNodes > 10000 then
+      begin
+        Result.Free;
+        Error('Configuration exceeds 10000 nodes', ALineNo, AColumn);
+      end;
+    end;
     StoreAnchor(Anchor, Result);
   finally
     Parser.Free;
@@ -3783,6 +3976,13 @@ var
 begin
   if AKey = '' then
     Error(RCS_EXPECTED_KEY, ALineNo, 1);
+
+  if FConfigurationProfile AND CharInSet(AKey[1], ['*', '&', '!', '?', '[', '{']) then
+    Error('Configuration mapping keys must be strings', ALineNo, 1);
+  if FConfigurationProfile AND NOT CharInSet(AKey[1], ['"', '''']) then
+    if (AKey = 'null') OR (AKey = 'true') OR (AKey = 'false') OR CharInSet(AKey[1], ['0'..'9']) OR
+      ((AKey[1] = '-') AND (Length(AKey) > 1) AND CharInSet(AKey[2], ['0'..'9'])) then
+      Error('Configuration mapping keys must be strings', ALineNo, 1);
 
   if AKey[1] = '*' then
   begin
@@ -3817,6 +4017,16 @@ var
   LineNo: Integer;
   AllowContinuation: Boolean;
 begin
+  if FConfigurationProfile then
+  begin
+    Inc(FDepth);
+    Inc(FNodes);
+    if FDepth > 32 then
+      Error('Configuration exceeds 32 nesting levels', CurrentLineNo, CurrentIndent + 1);
+    if FNodes > 10000 then
+      Error('Configuration exceeds 10000 nodes', CurrentLineNo, CurrentIndent + 1);
+  end;
+  try
   SkipIgnorable;
   if Eof then
     Exit(TYAMLNull.Create);
@@ -3871,6 +4081,10 @@ begin
       Inc(FIndex);
   end;
   StoreAnchor(Anchor, Result);
+  finally
+    if FConfigurationProfile then
+      Dec(FDepth);
+  end;
 end;
 
 function TYAMLBlockParser.ParseObject(AIndent: Integer): TYAMLObject;
@@ -3907,6 +4121,12 @@ begin
       Break;
     if CurrentIndent > AIndent then
       Error(RCS_INVALID_YAML, CurrentLineNo, CurrentIndent + 1);
+    if FConfigurationProfile then
+    begin
+      Inc(FEntries);
+      if FEntries > 10000 then
+        Error('Configuration exceeds 10000 nodes', CurrentLineNo, CurrentIndent + 1);
+    end;
 
     LineNo:=CurrentLineNo;
     Line:=RemoveComment(CurrentLine);
@@ -3916,6 +4136,8 @@ begin
 
     if (Trim(Line) = '?') OR ((Trim(Line) <> '') AND (Trim(Line)[1] = '?') AND ((Length(Trim(Line)) = 1) OR IsYAMLChar(Trim(Line)[2], [ycSpace, ycTab]))) then
     begin
+      if FConfigurationProfile then
+        Error('Configuration does not allow complex keys', LineNo, AIndent + 1);
       if (Length(Trim(Line)) > 1) AND (Trim(Line)[2] = #9) then
         Error(RCS_INVALID_YAML, LineNo, AIndent + 2);
       ValueText:=Trim(Copy(Trim(Line), 2, MaxInt));
@@ -4061,6 +4283,11 @@ begin
 
       if Value = nil then
         Value:=TYAMLNull.Create;
+      if FConfigurationProfile AND AObject.HasKey(Key) then
+      begin
+        Value.Free;
+        Error(Format(RCS_DUPLICATE_KEY, [Key]), LineNo, AIndent + 1);
+      end;
       AObject.SetOrAdd(Key, Value);
       Continue;
     end;
@@ -4139,11 +4366,23 @@ begin
     StoreAnchor(Anchor, Value);
     if Key = '<<' then
     begin
+      if FConfigurationProfile then
+      begin
+        Value.Free;
+        Error('Configuration does not allow merge keys', LineNo, AIndent + 1);
+      end;
       ApplyMerge(AObject, Value);
       Value.Free;
     end
     else
+    begin
+      if FConfigurationProfile AND AObject.HasKey(Key) then
+      begin
+        Value.Free;
+        Error(Format(RCS_DUPLICATE_KEY, [Key]), LineNo, AIndent + 1);
+      end;
       AObject.SetOrAdd(Key, Value);
+    end;
   end;
 end;
 
