@@ -390,6 +390,24 @@ begin
   Result:=True;
 end;
 
+function YAMLDecimalInteger(const AValue: String): Boolean;
+var
+  I, StartIndex: Integer;
+begin
+  Result:=False;
+  if AValue = '' then
+    Exit;
+  StartIndex:=1;
+  if AValue[1] = '-' then
+    StartIndex:=2;
+  if StartIndex > Length(AValue) then
+    Exit;
+  for I:=StartIndex to Length(AValue) do
+    if NOT CharInSet(AValue[I], ['0'..'9']) then
+      Exit;
+  Result:=True;
+end;
+
 resourcestring
   RCS_KYAML_PARSER_EXCEPTION = 'KYAML Parser Exception at Line: %d Col: %d: %s';
   RCS_INVALID_VALUE_CAST = 'Invalid KYAML value cast';
@@ -2893,6 +2911,10 @@ begin
   if AValue = '' then
     Exit(TYAMLNull.Create);
 
+  if FConfigurationProfile AND (SameText(AValue, YAML_LITERAL_TRUE) OR SameText(AValue, YAML_LITERAL_FALSE)) AND
+    (AValue <> YAML_LITERAL_TRUE) AND (AValue <> YAML_LITERAL_FALSE) then
+    Error('Configuration booleans must use lowercase true or false');
+
   if SameText(AValue, YAML_LITERAL_NULL) OR (AValue = YAML_LITERAL_NULL_SHORT) then
     Exit(TYAMLNull.Create);
   if SameText(AValue, YAML_LITERAL_TRUE) then
@@ -2901,7 +2923,11 @@ begin
     Exit(TYAMLBoolean.CreateFrom(False));
 
   if TryStrToInt64(AValue, I) then
+  begin
+    if FConfigurationProfile AND NOT YAMLDecimalInteger(AValue) then
+      Error('Configuration integers must use decimal notation');
     Exit(TYAMLInteger.CreateFrom(I));
+  end;
 
   FormatSettings:=YAMLFormatSettings;
   if (Pos('.', AValue) > 0) OR (Pos('e', LowerCase(AValue)) > 0) then
