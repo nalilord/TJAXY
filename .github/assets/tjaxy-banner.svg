@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360" role="img" aria-labelledby="title desc">
+  <title id="title">TJAXY — five formats, one shared DOM</title>
+  <desc id="desc">A Delphi library with reusable document templates for TOML, JSON, Avro, XML and YAML. Five format nodes connect to a shared document model.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#0c1424"/>
+      <stop offset="1" stop-color="#17233b"/>
+    </linearGradient>
+    <linearGradient id="accent" gradientUnits="userSpaceOnUse" x1="64" y1="0" x2="1134" y2="0">
+      <stop stop-color="#5eead4"/>
+      <stop offset="1" stop-color="#93a8ff"/>
+    </linearGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#c3d5f5" stroke-opacity=".045"/>
+    </pattern>
+  </defs>
+  <rect width="1200" height="360" rx="20" fill="url(#background)"/>
+  <rect width="1200" height="360" rx="20" fill="url(#grid)"/>
+  <path d="M64 59H128" stroke="url(#accent)" stroke-width="4" stroke-linecap="round"/>
+  <g font-family="Segoe UI, DejaVu Sans, sans-serif">
+    <text x="64" y="154" fill="#f0f6ff" font-size="88" font-weight="750" letter-spacing="-3">TJAXY</text>
+    <text x="67" y="200" fill="#d9e6f7" font-size="26" font-weight="500">Five formats. One shared DOM.</text>
+    <text x="67" y="239" fill="#9daec7" font-size="18">Structured data for Object Pascal.</text>
+    <g font-size="12" font-weight="600" letter-spacing="2">
+      <text x="67" y="300" fill="#5eead4">PARSE</text>
+      <circle cx="148" cy="296" r="2" fill="#54657e"/>
+      <text x="168" y="300" fill="#9cafff">EDIT</text>
+      <circle cx="232" cy="296" r="2" fill="#54657e"/>
+      <text x="252" y="300" fill="#f9c578">MAP</text>
+      <circle cx="315" cy="296" r="2" fill="#54657e"/>
+      <text x="335" y="300" fill="#c5b3ff">WRITE</text>
+      <circle cx="424" cy="296" r="2" fill="#54657e"/>
+      <text x="444" y="300" fill="#7dd3fc">TEMPLATE</text>
+    </g>
+    <g fill="none" stroke="#536883" stroke-width="1.5">
+      <path d="M880 67H916Q940 67 940 91V156Q940 180 966 180"/>
+      <path d="M880 123H916Q940 123 940 147V156Q940 180 966 180"/>
+      <path d="M880 179H966"/>
+      <path d="M880 235H916Q940 235 940 211V204Q940 180 966 180"/>
+      <path d="M880 291H916Q940 291 940 267V204Q940 180 966 180"/>
+    </g>
+    <g font-size="17" font-weight="600">
+      <rect x="714" y="46" width="166" height="42" rx="10" fill="#122b30" stroke="#2a635d"/>
+      <circle cx="738" cy="67" r="4" fill="#5eead4"/>
+      <text x="756" y="73" fill="#99f6e4">TOML</text>
+      <rect x="714" y="102" width="166" height="42" rx="10" fill="#252940" stroke="#53557c"/>
+      <circle cx="738" cy="123" r="4" fill="#a5b4fc"/>
+      <text x="756" y="129" fill="#c7d2fe">JSON</text>
+      <rect x="714" y="158" width="166" height="42" rx="10" fill="#302c29" stroke="#706044"/>
+      <circle cx="738" cy="179" r="4" fill="#f9c578"/>
+      <text x="756" y="185" fill="#fbdba5">Avro</text>
+      <rect x="714" y="214" width="166" height="42" rx="10" fill="#2b2540" stroke="#62537b"/>
+      <circle cx="738" cy="235" r="4" fill="#c4b5fd"/>
+      <text x="756" y="241" fill="#ddd6fe">XML</text>
+      <rect x="714" y="270" width="166" height="42" rx="10" fill="#182f44" stroke="#386b8a"/>
+      <circle cx="738" cy="291" r="4" fill="#7dd3fc"/>
+      <text x="756" y="297" fill="#bae6fd">YAML</text>
+    </g>
+    <rect x="970" y="119" width="164" height="122" rx="18" fill="#111d31" stroke="#59758d"/>
+    <path d="M996 120H1108" stroke="url(#accent)" stroke-width="2"/>
+    <text x="1052" y="180" text-anchor="middle" fill="#d7e6fc" font-family="Consolas, DejaVu Sans Mono, monospace" font-size="39">{ }</text>
+    <text x="1052" y="212" text-anchor="middle" fill="#9daec7" font-size="13" font-weight="600" letter-spacing="2">SHARED DOM</text>
+  </g>
+</svg>
