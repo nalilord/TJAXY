@@ -545,6 +545,8 @@ conditionals for mapping.
 | Root element | Top-level object key with the root's name |
 | Attributes | Object under `@` |
 | Text alongside attributes or children | Value under `#text` |
+| A single CDATA section | String under `#cdata`, with optional `@` attributes |
+| Mixed text, CDATA, and elements | Ordered entries under `#children` |
 | Repeated child elements | Array under the element name |
 
 Lookup helpers handle attribute and text fallbacks:
@@ -572,6 +574,87 @@ end;
 Namespace prefixes are preserved by default. Pass `xnmStripPrefixes` as the
 second factory argument to use local names and omit `xmlns` declarations.
 Opening and closing qualified names are still validated before normalization.
+
+The default `xcmGrouped` child mapping groups repeated names and does not
+preserve order between unlike siblings. To retain sibling order or mixed text,
+create `TXML`, set `ChildMode:=xcmOrdered`, then call `ReadFromString` or
+`LoadFromStream`. Ordered elements use a `#children` array of single-key
+objects, for example `[{"item":null},{"note":null},{"item":null}]`.
+Text between elements uses `{"#text":"text"}` entries in that array.
+The writer recognizes this representation for generated documents too.
+Do not combine `#children` with grouped child keys or a parent `#text` value.
+Attributes still live under `@`; text-only leaves keep their usual mapping.
+The readable writer formats generated element-only sequences on separate lines
+and preserves existing whitespace/text in mixed content.
+
+### CDATA reading and writing
+
+CDATA is preserved explicitly by default (`CDataMode = xcdPreserve`). An element
+containing only one CDATA section maps to an object with a `#cdata` string.
+Empty sections, surrounding whitespace, and literal entity-like text such as
+`&amp;` remain intact. CDATA contents are not entity-decoded.
+
+To write CDATA, add `#cdata` to the element object:
+
+```pascal
+var
+  Doc, ReadBack: TXML;
+begin
+  Doc := TXML.CreateObjectRoot;
+  try
+    Doc.AsObject.AddObject('script').Add('#cdata', 'if (a < b && ready) run();');
+    Writeln(Doc.WriteToString(xwmCondensed));
+
+    ReadBack := TXML.FromString(Doc.WriteToString(xwmCondensed));
+    try
+      Writeln(ReadBack.AsObject['script'].AsObject['#cdata'].AsString);
+    finally
+      ReadBack.Free;
+    end;
+  finally
+    Doc.Free;
+  end;
+end;
+```
+
+XML output:
+
+```xml
+<script><![CDATA[if (a < b && ready) run();]]></script>
+```
+
+When CDATA appears alongside text or child elements, the reader automatically
+uses `#children` for that element in either child mode. This retains each
+section's position, including adjacent or empty CDATA sections. For example:
+
+```xml
+<p>before <![CDATA[<literal>&]]><b>bold</b> after</p>
+```
+
+```json
+{
+  "p": {
+    "#children": [
+      {"#text": "before "},
+      {"#cdata": "<literal>&"},
+      {"b": "bold"},
+      {"#text": " after"}
+    ]
+  }
+}
+```
+
+The writer accepts the same representation for generated mixed content and
+adds no formatting whitespace between its entries. A grouped `#cdata` string
+may be combined with `@` attributes; use `#children` to combine it with text or
+child elements. Non-string CDATA values and invalid XML characters raise
+`EXMLException`. Values containing `]]>` are safely split into adjacent CDATA
+sections, as required by the [XML CDATA syntax](https://www.w3.org/TR/xml/#sec-cdata-sect).
+
+For the earlier text-only reading behavior, create `TXML` and set
+`CDataMode := xcdText` before `ReadFromString`, `LoadFromStream`, or `LoadFromFile`.
+CDATA then contributes literal text to the usual scalar or `#text` value.
+Writing honors explicit `#cdata` nodes in either mode.
 
 ## Avro with a schema
 
@@ -658,7 +741,7 @@ raise explicitly. The other codecs have not been validated on FPC.
 | TOML | Quoted/dotted keys, inline tables, nested arrays of tables, multiline strings, decimal/hex/octal/binary integers, floats, booleans, date/time values, comments | Full TOML 1.1 edge-case coverage is not established |
 | JSON / JSON5 | Strict token grammar, escaped strings, signed JSON5 hexadecimal values | No streaming SAX-style interface |
 | Avro | Records, enums, arrays, maps, unions, named references, aliases metadata, primitives/defaults, multi-block reads, canonical form, CRC-64-AVRO fingerprints, date/time/uuid/decimal logical values | No snappy/zstandard; no arbitrary-precision decimal or complete schema-resolution matrix; named references must already be defined |
-| XML | CDATA, entity decoding, internal DOCTYPE declaration skipping, namespace modes | No DTD validation/entity expansion or processing-instruction round-trip; external entities, non-UTF-8, and supplementary-character/name-range cases are outside the tested conformance slice |
+| XML | Explicit CDATA read/write, mixed-content ordering, entity decoding, internal DOCTYPE declaration skipping, namespace modes | No DTD validation/entity expansion or processing-instruction round-trip; external entities, non-UTF-8, and supplementary-character/name-range cases are outside the tested conformance slice |
 | YAML | Block/flow syntax, anchors, aliases, merge keys, multi-document read/write | Full YAML 1.2 semantic conformance is not established; empty/comment-only input yields one null document |
 
 The pinned YAML suite passes **402/402 acceptance cases** and **45/45 basic

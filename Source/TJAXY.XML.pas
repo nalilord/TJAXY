@@ -20,6 +20,8 @@ uses
 type
   TXMLStringWriteMode = (xwmReadable, xwmCondensed);
   TXMLNamespaceMode = (xnmPreserve, xnmStripPrefixes);
+  TXMLChildMode = (xcmGrouped, xcmOrdered);
+  TXMLCDataMode = (xcdPreserve, xcdText);
 
   EXMLException = class(Exception);
 
@@ -27,6 +29,8 @@ type
   private
     FData: TStringStream;
     FNamespaceMode: TXMLNamespaceMode;
+    FChildMode: TXMLChildMode;
+    FCDataMode: TXMLCDataMode;
   public
     class function CreateTemplate(const AName: String): TTJAXYTemplate; static;
     class function Template(const AName: String): TTJAXYTemplate; static;
@@ -53,6 +57,12 @@ type
     function WriteToFile(const AFileName: String; AWriteMode: TTJAXYStringWriteMode = tjaxywmReadable): String; overload; override;
     function WriteToFile(const AFileName: String; AWriteMode: TXMLStringWriteMode): String; reintroduce; overload; virtual;
     property NamespaceMode: TXMLNamespaceMode read FNamespaceMode write FNamespaceMode;
+    // Ordered mode uses #children arrays of single-key element/#text/#cdata objects.
+    // Set before ReadFromString/LoadFromStream; grouped mapping remains the default.
+    property ChildMode: TXMLChildMode read FChildMode write FChildMode;
+    // CDATA is explicit by default; xcdText reads it as ordinary literal text.
+    // Set before ReadFromString/LoadFromStream. Writing always honors #cdata.
+    property CDataMode: TXMLCDataMode read FCDataMode write FCDataMode;
   end;
 
 implementation
@@ -60,6 +70,8 @@ implementation
 const
   XML_ATTR_KEY = '@';
   XML_TEXT_KEY = '#text';
+  XML_CDATA_KEY = '#cdata';
+  XML_CHILDREN_KEY = '#children';
   XML_LINE_FEED = #13#10;
   XML_INDENT_COUNT = 2;
 
@@ -146,6 +158,8 @@ resourcestring
   SXMLUnexpectedTrailingContent = 'Unexpected trailing XML content';
   SXMLInvalidName = 'Invalid XML name "%s"';
   SXMLRootMustBeObject = 'XML root must be an object with at least one element name';
+  SXMLInvalidOrderedContent = 'Ordered XML content requires a #children array of single-key element, #text or #cdata objects, without grouped siblings';
+  SXMLInvalidCDataContent = 'XML #cdata must be a string and may only be combined with @; use #children for mixed content';
 
 function TJAXYWriteModeToXML(AWriteMode: TTJAXYStringWriteMode): TXMLStringWriteMode;
 begin
@@ -169,6 +183,10 @@ begin
   Result:=XMLEncode(AValue);
   Result:=StringReplace(Result, XML_ATTRIBUTE_QUOTE, XML_ENCODED_QUOT, [rfReplaceAll]);
   Result:=StringReplace(Result, '''', XML_ENCODED_APOS, [rfReplaceAll]);
+  // Literal attribute whitespace is normalized by XML readers. References retain its value.
+  Result:=StringReplace(Result, #9, '&#9;', [rfReplaceAll]);
+  Result:=StringReplace(Result, #10, '&#10;', [rfReplaceAll]);
+  Result:=StringReplace(Result, #13, '&#13;', [rfReplaceAll]);
 end;
 
 procedure XMLValidateChars(const AValue: String);
@@ -288,9 +306,19 @@ begin
 end;
 
 type
+  // Temporary content owns values until the final grouped/ordered layout is chosen.
+  TXMLContentPart = class
+  public
+    Name: String;
+    Value: TTJAXYValue;
+    destructor Destroy; override;
+  end;
+
   TTJAXYXMLParser = class
   private
     FNamespaceMode: TXMLNamespaceMode;
+    FChildMode: TXMLChildMode;
+    FCDataMode: TXMLCDataMode;
     FSeenDoctype: Boolean;
     FText: String;
     FIndex: Integer;
@@ -312,7 +340,8 @@ type
     function ShouldKeepAttribute(const AName: String): Boolean;
     function ParseElement(out AName: String): TTJAXYValue;
   public
-    constructor Create(const AText: String; const ANamespaceMode: TXMLNamespaceMode);
+    constructor Create(const AText: String; const ANamespaceMode: TXMLNamespaceMode;
+      AChildMode: TXMLChildMode; ACDataMode: TXMLCDataMode);
     function Parse: TTJAXYValue;
   end;
 
@@ -324,19 +353,30 @@ type
     procedure ValidateName(const AName: String);
     function WriteElement(const AName: String; const AValue: TTJAXYValue; const ALevel: Integer): String;
     function WriteObjectElement(const AName: String; const AObject: TTJAXYObject; const ALevel: Integer): String;
+    function WriteOrderedElement(const AName, AAttributes: String; AObject: TTJAXYObject; ALevel: Integer): String;
     function WriteScalarElement(const AName: String; const AValue: TTJAXYValue; const ALevel: Integer): String;
     function WriteValueAsText(const AValue: TTJAXYValue): String;
+    function WriteCData(const AValue: TTJAXYValue): String;
   public
     constructor Create(const AMode: TXMLStringWriteMode);
     function Write(const AValue: TTJAXYValue): String;
   end;
 
-constructor TTJAXYXMLParser.Create(const AText: String; const ANamespaceMode: TXMLNamespaceMode);
+destructor TXMLContentPart.Destroy;
+begin
+  Value.Free;
+  inherited;
+end;
+
+constructor TTJAXYXMLParser.Create(const AText: String; const ANamespaceMode: TXMLNamespaceMode;
+  AChildMode: TXMLChildMode; ACDataMode: TXMLCDataMode);
 begin
   inherited Create;
   FText:=AText;
   FIndex:=1;
   FNamespaceMode:=ANamespaceMode;
+  FChildMode:=AChildMode;
+  FCDataMode:=ACDataMode;
   FSeenDoctype:=False;
 end;
 
@@ -682,15 +722,39 @@ var
   QualifiedName: String;
   Obj: TTJAXYObject;
   Attrs: TTJAXYObject;
-  AttrName: String;
-  ChildName: String;
+  Children: TTJAXYArray;
+  AttrName, ChildName: String;
   ChildValue: TTJAXYValue;
-  Text: String;
-  HasAttributes: Boolean;
-  HasElements: Boolean;
-  Closed: Boolean;
-  Start: Integer;
-  RawText: String;
+  Text, RawText: String;
+  HasAttributes, HasElements, HasCData, Closed: Boolean;
+  Start, I: Integer;
+  Parts: TList;
+  Part: TXMLContentPart;
+
+  procedure AddPart(const APartName: String; APartValue: TTJAXYValue);
+  var
+    NewPart: TXMLContentPart;
+  begin
+    NewPart:=TXMLContentPart.Create;
+    try
+      NewPart.Value:=APartValue;
+      NewPart.Name:=APartName;
+      Parts.Add(NewPart);
+    except
+      NewPart.Free;
+      raise;
+    end;
+  end;
+
+  procedure FlushText;
+  begin
+    if Text <> '' then
+    begin
+      AddPart(XML_TEXT_KEY, TTJAXYString.CreateFrom(Text));
+      Text:='';
+    end;
+  end;
+
 begin
   Expect(XML_TAG_OPEN);
   if StartsWith(Copy(XML_MARKER_CDATA_OPEN, 2, MaxInt)) then
@@ -701,11 +765,14 @@ begin
   AName:=NormalizeName(QualifiedName);
 
   Obj:=TTJAXYObject.Create;
-  HasAttributes:=False;
-  HasElements:=False;
-  Closed:=False;
-  Attrs:=nil;
+  Parts:=nil;
   try
+    Parts:=TList.Create;
+    HasAttributes:=False;
+    HasElements:=False;
+    HasCData:=False;
+    Closed:=False;
+    Attrs:=nil;
     SkipWhitespace;
     while (Current <> XML_TAG_CLOSE) AND (NOT StartsWith(XML_MARKER_EMPTY_ELEMENT_CLOSE)) do
     begin
@@ -717,17 +784,12 @@ begin
       begin
         AttrName:=NormalizeName(AttrName);
         if NOT Assigned(Attrs) then
-        begin
-          Attrs:=TTJAXYObject.Create;
-          Obj.Add(XML_ATTR_KEY, Attrs);
-        end;
+          Attrs:=Obj.AddObject(XML_ATTR_KEY);
         Attrs.Add(AttrName, ReadQuotedValue);
         HasAttributes:=True;
       end
       else
-      begin
         ReadQuotedValue;
-      end;
       if (NOT Eof) AND (Current <> XML_TAG_CLOSE) AND (NOT StartsWith(XML_MARKER_EMPTY_ELEMENT_CLOSE)) AND
         NOT CharInSet(Current, XML_WHITESPACE_CHARS) then
         raise EXMLException.Create(SXMLExpectedAttributeWhitespace);
@@ -738,9 +800,12 @@ begin
     begin
       Inc(FIndex, Length(XML_MARKER_EMPTY_ELEMENT_CLOSE));
       if HasAttributes then
-        Exit(Obj);
-      Obj.Free;
-      Exit(TTJAXYNull.Create);
+      begin
+        Result:=Obj;
+        Obj:=nil;
+      end else
+        Result:=TTJAXYNull.Create;
+      Exit;
     end;
 
     Expect(XML_TAG_CLOSE);
@@ -766,13 +831,21 @@ begin
         Inc(FIndex, Length(XML_MARKER_CDATA_OPEN));
         RawText:=ReadUntil(XML_MARKER_CDATA_CLOSE);
         XMLValidateChars(RawText);
-        Text:=Text + RawText;
+        HasCData:=True;
+        if FCDataMode = xcdPreserve then
+        begin
+          FlushText;
+          // Keep even empty sections distinct from absent content.
+          AddPart(XML_CDATA_KEY, TTJAXYString.CreateFrom(RawText));
+        end else
+          Text:=Text + RawText;
       end
       else if Current = XML_TAG_OPEN then
       begin
         HasElements:=True;
+        FlushText;
         ChildValue:=ParseElement(ChildName);
-        XMLAddGroupedChild(Obj, ChildName, ChildValue);
+        AddPart(ChildName, ChildValue);
       end
       else
       begin
@@ -785,23 +858,59 @@ begin
         Text:=Text + XMLDecode(RawText);
       end;
     end;
-
     if NOT Closed then
       raise EXMLException.CreateFmt(SXMLUnclosedElement, [AName]);
+    FlushText;
 
-    if (NOT HasAttributes) AND (NOT HasElements) then
+    if HasCData AND (FCDataMode = xcdPreserve) AND (Parts.Count = 1) AND
+      (TXMLContentPart(Parts[0]).Name = XML_CDATA_KEY) then
     begin
-      Result:=TTJAXYString.CreateFrom(Text);
-      Obj.Free;
-      Exit;
+      Part:=TXMLContentPart(Parts[0]);
+      Obj.Add(XML_CDATA_KEY, Part.Value);
+      Part.Value:=nil;
+    end else
+    if (HasCData AND (FCDataMode = xcdPreserve)) OR
+      (HasElements AND (FChildMode = xcmOrdered)) then
+    begin
+      Children:=Obj.AddArray(XML_CHILDREN_KEY);
+      for I:=0 to Parts.Count - 1 do
+      begin
+        Part:=TXMLContentPart(Parts[I]);
+        Children.AddObject.Add(Part.Name, Part.Value);
+        Part.Value:=nil;
+      end;
+    end else
+    begin
+      Text:='';
+      for I:=0 to Parts.Count - 1 do
+      begin
+        Part:=TXMLContentPart(Parts[I]);
+        if Part.Name = XML_TEXT_KEY then
+          Text:=Text + Part.Value.AsString
+        else
+        begin
+          XMLAddGroupedChild(Obj, Part.Name, Part.Value);
+          Part.Value:=nil;
+        end;
+      end;
+      if (NOT HasAttributes) AND (NOT HasElements) then
+      begin
+        Result:=TTJAXYString.CreateFrom(Text);
+        Exit;
+      end;
+      if (Trim(Text) <> '') OR HasCData then
+        Obj.Add(XML_TEXT_KEY, Text);
     end;
-
-    if Trim(Text) <> '' then
-      Obj.Add(XML_TEXT_KEY, Text);
     Result:=Obj;
-  except
+    Obj:=nil;
+  finally
     Obj.Free;
-    raise;
+    if Parts <> nil then
+    begin
+      for I:=0 to Parts.Count - 1 do
+        TObject(Parts[I]).Free;
+      Parts.Free;
+    end;
   end;
 end;
 
@@ -811,15 +920,14 @@ var
   RootValue: TTJAXYValue;
   Obj: TTJAXYObject;
 begin
-  SkipDeclarationAndTrivia(True);
-  RootValue:=ParseElement(RootName);
-  SkipDeclarationAndTrivia(False);
-  if NOT Eof then
-    raise EXMLException.Create(SXMLUnexpectedTrailingContent);
-
   Obj:=TTJAXYObject.Create;
   try
+    SkipDeclarationAndTrivia(True);
+    RootValue:=ParseElement(RootName);
     Obj.Add(RootName, RootValue);
+    SkipDeclarationAndTrivia(False);
+    if NOT Eof then
+      raise EXMLException.Create(SXMLUnexpectedTrailingContent);
     Result:=Obj;
   except
     Obj.Free;
@@ -868,6 +976,7 @@ begin
     Result:=BoolToStr(AValue.AsBoolean, True)
   else
     Result:=AValue.AsString;
+  XMLValidateChars(Result);
 end;
 
 function TXMLWriter.WriteScalarElement(const AName: String; const AValue: TTJAXYValue; const ALevel: Integer): String;
@@ -878,6 +987,16 @@ begin
   else
     Result:=Indent(ALevel) + XML_TAG_OPEN + AName + XML_TAG_CLOSE + XMLEncode(WriteValueAsText(AValue)) +
       XML_MARKER_END_TAG_OPEN + AName + XML_TAG_CLOSE;
+end;
+
+function TXMLWriter.WriteCData(const AValue: TTJAXYValue): String;
+begin
+  if (AValue = nil) OR NOT AValue.IsString then
+    raise EXMLException.Create(SXMLInvalidCDataContent);
+  XMLValidateChars(AValue.AsString);
+  // A CDATA terminator in the value requires two adjacent sections.
+  Result:=XML_MARKER_CDATA_OPEN + StringReplace(AValue.AsString,
+    XML_MARKER_CDATA_CLOSE, ']]]]><![CDATA[>', [rfReplaceAll]) + XML_MARKER_CDATA_CLOSE;
 end;
 
 function TXMLWriter.WriteObjectElement(const AName: String; const AObject: TTJAXYObject; const ALevel: Integer): String;
@@ -900,6 +1019,18 @@ begin
       AttrText:=AttrText + XML_ATTRIBUTE_SEPARATOR + Attrs.Name[I] + XML_ATTRIBUTE_EQUALS + XML_ATTRIBUTE_QUOTE +
         XMLEncodeAttribute(WriteValueAsText(Attrs.Item[I])) + XML_ATTRIBUTE_QUOTE;
     end;
+  end;
+
+  if AObject.HasKey(XML_CHILDREN_KEY) then
+    Exit(WriteOrderedElement(AName, AttrText, AObject, ALevel));
+
+  if AObject.HasKey(XML_CDATA_KEY) then
+  begin
+    for I:=0 to AObject.Count - 1 do
+      if (AObject.Name[I] <> XML_ATTR_KEY) AND (AObject.Name[I] <> XML_CDATA_KEY) then
+        raise EXMLException.Create(SXMLInvalidCDataContent);
+    Exit(Indent(ALevel) + XML_TAG_OPEN + AName + AttrText + XML_TAG_CLOSE +
+      WriteCData(AObject[XML_CDATA_KEY]) + XML_MARKER_END_TAG_OPEN + AName + XML_TAG_CLOSE);
   end;
 
   Body:='';
@@ -928,6 +1059,69 @@ begin
   else
     Result:=Indent(ALevel) + XML_TAG_OPEN + AName + AttrText + XML_TAG_CLOSE + Body +
       XML_MARKER_END_TAG_OPEN + AName + XML_TAG_CLOSE;
+end;
+
+function TXMLWriter.WriteOrderedElement(const AName, AAttributes: String; AObject: TTJAXYObject; ALevel: Integer): String;
+var
+  Children: TTJAXYArray;
+  Child: TTJAXYObject;
+  I: Integer;
+  Mixed: Boolean;
+  Body: String;
+  Compact: TXMLWriter;
+begin
+  Result:='';
+  if NOT AObject[XML_CHILDREN_KEY].IsArray then
+    raise EXMLException.Create(SXMLInvalidOrderedContent);
+  for I:=0 to AObject.Count - 1 do
+    if (AObject.Name[I] <> XML_ATTR_KEY) AND (AObject.Name[I] <> XML_CHILDREN_KEY) then
+      raise EXMLException.Create(SXMLInvalidOrderedContent);
+  Children:=AObject[XML_CHILDREN_KEY].AsArray;
+  Mixed:=False;
+  for I:=0 to Children.Count - 1 do
+  begin
+    if NOT Children[I].IsObject then
+      raise EXMLException.Create(SXMLInvalidOrderedContent);
+    Child:=Children[I].AsObject;
+    if Child.Count <> 1 then
+      raise EXMLException.Create(SXMLInvalidOrderedContent);
+    if (Child.Name[0] = XML_TEXT_KEY) OR (Child.Name[0] = XML_CDATA_KEY) then
+    begin
+      if NOT Child.Item[0].IsString then
+        raise EXMLException.Create(SXMLInvalidOrderedContent);
+      XMLValidateChars(Child.Item[0].AsString);
+      Mixed:=True;
+    end;
+  end;
+  Body:='';
+  Compact:=TXMLWriter.Create(xwmCondensed);
+  try
+    for I:=0 to Children.Count - 1 do
+    begin
+      Child:=Children[I].AsObject;
+      if Child.Name[0] = XML_TEXT_KEY then
+        Body:=Body + XMLEncode(Child.Item[0].AsString)
+      else if Child.Name[0] = XML_CDATA_KEY then
+        Body:=Body + WriteCData(Child.Item[0])
+      else if Mixed then
+        Body:=Body + Compact.WriteElement(Child.Name[0], Child.Item[0], 0)
+      else
+      begin
+        if I > 0 then
+          Body:=Body + NewLine;
+        Body:=Body + WriteElement(Child.Name[0], Child.Item[0], ALevel + 1);
+      end;
+    end;
+  finally
+    Compact.Free;
+  end;
+  if Body = '' then
+    Result:=Indent(ALevel) + XML_TAG_OPEN + AName + AAttributes + XML_MARKER_EMPTY_ELEMENT_CLOSE
+  else if Mixed then
+    Result:=Indent(ALevel) + XML_TAG_OPEN + AName + AAttributes + XML_TAG_CLOSE + Body + XML_MARKER_END_TAG_OPEN + AName + XML_TAG_CLOSE
+  else
+    Result:=Indent(ALevel) + XML_TAG_OPEN + AName + AAttributes + XML_TAG_CLOSE + NewLine + Body + NewLine +
+      Indent(ALevel) + XML_MARKER_END_TAG_OPEN + AName + XML_TAG_CLOSE;
 end;
 
 function TXMLWriter.WriteElement(const AName: String; const AValue: TTJAXYValue; const ALevel: Integer): String;
@@ -998,6 +1192,8 @@ begin
   inherited Create;
   FData:=TStringStream.Create('', TEncoding.UTF8, False);
   FNamespaceMode:=xnmPreserve;
+  FChildMode:=xcmGrouped;
+  FCDataMode:=xcdPreserve;
 end;
 
 class function TXML.CreateArrayRoot: TXML;
@@ -1095,7 +1291,7 @@ begin
   FData.WriteString(AValue);
   FData.Position:=0;
 
-  Parser:=TTJAXYXMLParser.Create(AValue, FNamespaceMode);
+  Parser:=TTJAXYXMLParser.Create(AValue, FNamespaceMode, FChildMode, FCDataMode);
   try
     SetRoot(Parser.Parse);
   finally

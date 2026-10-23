@@ -13,6 +13,12 @@ five text codecs, and TOML tests. The text checker needs Python 3.11+
 (`tomllib`) and PyYAML (`python3 -m pip install pyyaml`). `Win64` is the default;
 `./run-tests-wsl.sh Win32` runs the same suite with the 32-bit compiler.
 
+XML smoke tests cover explicit CDATA preservation, compatibility text mode,
+empty/whitespace sections, mixed-content ordering, safe `]]>` splitting,
+file/stream I/O, invalid values, and failed-load cleanup. The Python text
+checker independently validates emitted CDATA with ElementTree and minidom,
+including literal contents and section order.
+
 FPC 3.2.2 Linux x86-64 smoke coverage for Core, JSON, and YAML configuration:
 
 ```bash

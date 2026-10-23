@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 import tomllib
 import xml.etree.ElementTree as ET
+from xml.dom import Node, minidom
 
 import yaml
 
@@ -32,6 +33,23 @@ def main(directory: Path) -> None:
         expected = EXPECTED[:2] if name == "XML" else EXPECTED
         assert value == expected, f"{name}: {value!r} != {expected!r}"
         print(f"[PASS] independent {name} UTF-8 reader")
+
+    cdata_xml = read_utf8(directory, "data.cdata.xml")
+    root = ET.fromstring(cdata_xml)
+    assert root.find("payload").text == "<raw>&amp;€中\nend]]>tail]]>"
+    assert "<empty><![CDATA[]]></empty>" in cdata_xml
+    with minidom.parseString(cdata_xml) as document:
+        payload = document.getElementsByTagName("payload")[0]
+        assert all(node.nodeType == Node.CDATA_SECTION_NODE for node in payload.childNodes)
+        mixed = document.getElementsByTagName("mixed")[0]
+        assert [(node.nodeType, node.tagName if node.nodeType == Node.ELEMENT_NODE else node.data)
+                for node in mixed.childNodes] == [
+            (Node.TEXT_NODE, "before&"),
+            (Node.CDATA_SECTION_NODE, "<middle>&"),
+            (Node.ELEMENT_NODE, "child"),
+            (Node.TEXT_NODE, "after"),
+        ]
+    print("[PASS] independent XML CDATA values, section types, and mixed-content order")
 
 
 if __name__ == "__main__":
